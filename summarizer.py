@@ -1,7 +1,7 @@
 import os
 import re
 import smtplib
-import xml.etree.ElementTree as ET
+import json
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import requests
@@ -9,7 +9,7 @@ from google import genai
 from google.genai.types import Part
 
 # ================= Configuration =================
-AM950_CHANNEL_ID = "UCeqoQjJn89rE1qHvolb0XTA"
+STREAMS_URL = "https://www.youtube.com/@AM950Radio/streams"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 EMAIL_SENDER = os.environ.get("EMAIL_SENDER")
@@ -37,21 +37,25 @@ SHOW_PROMPTS = {
 }
 
 def get_latest_stream():
-    """Fetch the latest published video/stream from AM950's public feed."""
-    rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={AM950_CHANNEL_ID}"
-    resp = requests.get(rss_url, timeout=15)
+    """Scrapes the newest stream directly from AM950's live streams tab."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    resp = requests.get(STREAMS_URL, headers=headers, timeout=15)
     resp.raise_for_status()
 
-    root = ET.fromstring(resp.content)
-    ns = {"atom": "http://www.w3.org/2005/Atom", "yt": "http://www.youtube.com/xml/schemas/2015"}
-    
-    entry = root.find("atom:entry", ns)
-    if entry is None:
-        return None, None
+    # Find the videoId and title from YouTube's initial page state
+    matches = re.findall(r'\"videoId\":\"([a-zA-Z0-9_-]{11})\".*?\"title\":\{\"runs\":\[\{\"text\":\"(.*?)\"\}\]', resp.text)
+    if matches:
+        video_id, title = matches[0]
+        return video_id, title
 
-    video_id = entry.find("yt:videoId", ns).text
-    title = entry.find("atom:title", ns).text
-    return video_id, title
+    # Fallback pattern if layout slightly differs
+    id_match = re.search(r'\"videoId\":\"([a-zA-Z0-9_-]{11})\"', resp.text)
+    if id_match:
+        return id_match.group(1), "AM950 Broadcast"
+
+    return None, None
 
 def identify_focus(title: str) -> str:
     for key in SHOW_PROMPTS:
@@ -84,7 +88,7 @@ def generate_summary(video_url: str, title: str) -> str:
     """
 
     response = client.models.generate_content(
-        model="gemini-3.8-flash",
+        model="gemini-2.0-flash",
         contents=[
             Part.from_uri(file_uri=video_url, mime_type="video/mp4"),
             prompt
@@ -117,7 +121,7 @@ def main():
 
     video_id, title = get_latest_stream()
     if not video_id:
-        print("No videos found on channel.")
+        print("No stream found on channel.")
         return
 
     if video_id in processed_ids:
