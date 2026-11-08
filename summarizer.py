@@ -84,7 +84,7 @@ def generate_summary(video_url: str, title: str) -> str:
     """
 
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-3.8-flash",
         contents=[
             Part.from_uri(file_uri=video_url, mime_type="video/mp4"),
             prompt
