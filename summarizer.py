@@ -5,8 +5,8 @@ import datetime
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+import xml.etree.ElementTree as ET
 import requests
-from youtube_transcript_api import YouTubeTranscriptApi
 from google import genai
 from google.genai import types
 
@@ -20,14 +20,21 @@ EMAIL_RECIPIENT = os.environ.get("EMAIL_RECIPIENT")
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 465
 PROCESSED_FILE = "last_processed_video.txt"
-CHANNEL_URL = "https://www.youtube.com/@AM950Radio/streams"
-MAX_RECENT_VIDEOS = 10
+AUDIO_PATH = "broadcast_episode.mp3"
+
+# Official RSS feeds for targeted AM950 shows
+FEEDS = {
+    "Politics Matters": "https://www.am950radio.com/category/podcasts/pm/feed/",
+    "Matt McNeil": "https://www.am950radio.com/category/podcasts/mcneil/feed/",
+    "Native Roots": "https://www.am950radio.com/category/podcasts/native-roots/feed/",
+    "Station Feed": "https://www.am950radio.com/feed/"
+}
 # =================================================
 
 SHOW_PROMPTS = {
-    "Gaily": (
-        "Focus on: Specific LGBTQ+ legislation, local Twin Cities community organizers, "
-        "trans/queer rights initiatives, upcoming rallies, cultural events, and direct caller quotes."
+    "Politics Matters": (
+        "Focus on: Minnesota legislative priorities, election post-mortems, state budget impacts, "
+        "progressive public-affairs analysis, and detailed guest arguments."
     ),
     "McNeil": (
         "Focus on: Specific named Minnesota state legislators/officials, contentious caller debates, "
@@ -36,124 +43,79 @@ SHOW_PROMPTS = {
     "Native Roots": (
         "Focus on: Specific tribal governments, treaty rights, pipeline/water/land defense cases, "
         "indigenous community leaders, cultural preservation, and state/federal policy actions."
-    ),
-    "Politics Matters": (
-        "Focus on: Minnesota legislative priorities, election post-mortems, state budget impacts, "
-        "progressive public-affairs analysis, and detailed guest arguments."
     )
 }
 
-def get_recent_streams(limit=MAX_RECENT_VIDEOS):
-    """Scrapes the AM950 streams page to find up to `limit` unique recent stream IDs."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9"
-    }
-    
-    videos = []
-    try:
-        resp = requests.get(CHANNEL_URL, headers=headers, timeout=15)
-        if resp.status_code == 200:
-            vids = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"', resp.text)
-            seen = set()
-            for vid in vids:
-                if vid not in seen:
-                    seen.add(vid)
-                    videos.append(vid)
-                if len(videos) >= limit:
-                    break
-    except Exception as e:
-        print("Stream scraping warning:", e, flush=True)
+def get_recent_episodes():
+    """Scrapes RSS feeds for recent episodes containing downloadable MP3 enclosures."""
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    episodes = []
+    seen_ids = set()
 
-    if not videos:
-        videos = ["CPEGMSH1p8E"]
-
-    print(f"Discovered {len(videos)} recent stream candidate(s): {videos}", flush=True)
-    return videos
-
-def fetch_video_details(video_id):
-    """Fetches video title using YouTube oEmbed."""
-    title = f"AM950 Broadcast ({video_id})"
-    url = f"https://www.youtube.com/watch?v={video_id}"
-    try:
-        oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
-        res = requests.get(oembed_url, timeout=8)
-        if res.status_code == 200:
-            title = res.json().get("title", title)
-    except Exception:
-        pass
-    return title
-
-def fetch_transcript(video_id):
-    """Retrieves full transcript across both modern and legacy youtube-transcript-api versions."""
-    print(f"Checking transcript for video {video_id}...", flush=True)
-    raw_entries = None
-
-    # 1. Modern API pattern (v1.x+): YouTubeTranscriptApi().fetch(...)
-    try:
-        api = YouTubeTranscriptApi()
-        if hasattr(api, 'fetch'):
-            raw_entries = api.fetch(video_id, languages=['en'])
-        elif hasattr(api, 'get_transcript'):
-            raw_entries = api.get_transcript(video_id, languages=['en'])
-    except Exception as e:
-        pass
-
-    # 2. Modern listing pattern: YouTubeTranscriptApi().list(...)
-    if not raw_entries:
+    for show_name, feed_url in FEEDS.items():
         try:
-            api = YouTubeTranscriptApi()
-            if hasattr(api, 'list'):
-                t_list = api.list(video_id)
-                try:
-                    t_obj = t_list.find_transcript(['en'])
-                except Exception:
-                    t_obj = t_list.find_generated_transcript(['en'])
-                raw_entries = t_obj.fetch()
-        except Exception:
-            pass
+            print(f"Checking feed: {show_name}...", flush=True)
+            resp = requests.get(feed_url, headers=headers, timeout=12)
+            if resp.status_code != 200:
+                continue
 
-    # 3. Legacy classmethod patterns
-    if not raw_entries:
-        try:
-            if hasattr(YouTubeTranscriptApi, 'get_transcript'):
-                raw_entries = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
-            elif hasattr(YouTubeTranscriptApi, 'list_transcripts'):
-                t_list = YouTubeTranscriptApi.list_transcripts(video_id)
-                try:
-                    t_obj = t_list.find_transcript(['en'])
-                except Exception:
-                    t_obj = t_list.find_generated_transcript(['en'])
-                raw_entries = t_obj.fetch()
+            root = ET.fromstring(resp.content)
+            items = root.findall(".//item")
+            for item in items[:3]:  # Check up to 3 latest per show
+                title = item.find("title").text if item.find("title") is not None else "AM950 Broadcast"
+                link = item.find("link").text if item.find("link") is not None else ""
+                desc = item.find("description").text if item.find("description") is not None else ""
+                clean_desc = re.sub(r'<[^>]+>', '', desc).strip()
+
+                # Find direct MP3 url
+                mp3_url = None
+                enclosure = item.find("enclosure")
+                if enclosure is not None and "url" in enclosure.attrib:
+                    mp3_url = enclosure.attrib["url"]
+
+                if not mp3_url:
+                    mp3_match = re.search(r'https?://[^\s"]+\.mp3', desc)
+                    if mp3_match:
+                        mp3_url = mp3_match.group(0)
+
+                ep_id = link if link else title
+                if ep_id not in seen_ids and mp3_url:
+                    seen_ids.add(ep_id)
+                    episodes.append({
+                        "id": ep_id,
+                        "title": title,
+                        "desc": clean_desc,
+                        "mp3_url": mp3_url
+                    })
         except Exception as e:
-            print(f"Transcript unavailable for {video_id}: {e}", flush=True)
-            return None
+            print(f"Feed error for {show_name}: {e}", flush=True)
 
-    if raw_entries:
-        formatted = []
-        for item in raw_entries:
-            # Handles both dict-like items and object attributes
-            start_sec = getattr(item, 'start', None)
-            if start_sec is None and isinstance(item, dict):
-                start_sec = item.get('start', 0)
-            start_sec = int(float(start_sec or 0))
-            
-            minutes = start_sec // 60
-            seconds = start_sec % 60
-            
-            text_val = getattr(item, 'text', None)
-            if text_val is None and isinstance(item, dict):
-                text_val = item.get('text', '')
-            text_val = str(text_val or '').strip()
-            
-            if text_val:
-                formatted.append(f"[{minutes:02d}:{seconds:02d}] {text_val}")
-                
-        full_text = "\n".join(formatted)
-        print(f"Transcript loaded for {video_id} ({len(full_text)} characters)", flush=True)
-        return full_text
+    print(f"Discovered {len(episodes)} total episode candidate(s).", flush=True)
+    return episodes
 
-    return None
+def download_audio(mp3_url):
+    """Downloads audio directly from the station's CDN."""
+    print(f"Downloading MP3 from {mp3_url}...", flush=True)
+    if os.path.exists(AUDIO_PATH):
+        os.remove(AUDIO_PATH)
+
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        with requests.get(mp3_url, headers=headers, stream=True, timeout=90) as r:
+            r.raise_for_status()
+            with open(AUDIO_PATH, "wb") as f:
+                for chunk in r.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
+
+        if os.path.exists(AUDIO_PATH):
+            size_mb = os.path.getsize(AUDIO_PATH) / (1024 * 1024)
+            print(f"Audio downloaded: {size_mb:.2f} MB", flush=True)
+            return True
+    except Exception as e:
+        print(f"Audio download failed: {e}", flush=True)
+
+    return False
 
 def identify_focus(title):
     for key in SHOW_PROMPTS:
@@ -161,10 +123,10 @@ def identify_focus(title):
             return SHOW_PROMPTS[key]
     return "Focus on: Detailed policy arguments, exact guest statements, caller discussions, and local news."
 
-def generate_summary(video_url, title, transcript_text):
+def generate_summary(title, description, audio_available):
     client = genai.Client(
         api_key=GEMINI_API_KEY,
-        http_options=types.HttpOptions(timeout=90000.0)
+        http_options=types.HttpOptions(timeout=180000.0)
     )
     focus_guidance = identify_focus(title)
     today_str = datetime.datetime.now().strftime("%B %d, %Y")
@@ -172,17 +134,15 @@ def generate_summary(video_url, title, transcript_text):
     prompt = f"""You are an executive assistant to the Station Manager at AM950 Radio (KTNF) in Minneapolis-St. Paul.
 Today's Date: {today_str}
 
-Analyze this AM950 broadcast from its official word-for-word transcript:
+Analyze this AM950 broadcast:
 Show Title: {title}
-URL: {video_url}
 
 Show Directives:
 {focus_guidance}
 
-FULL BROADCAST TRANSCRIPT (with timestamps):
-{transcript_text[:40000]}
-
-Write a comprehensive, granular executive station memorandum based strictly on the spoken words above. Do not speculate, invent, or extrapolate.
+INSTRUCTIONS:
+Listen carefully to the broadcast audio attached. Produce a detailed executive memo summarizing ONLY what was actually spoken on air: the real topics, specific election results, candidate names, races, arguments, and commentary.
+Do NOT invent topics, do NOT fabricate callers, and do NOT extrapolate beyond what was actually said.
 
 Format the memorandum as follows:
 
@@ -193,10 +153,10 @@ DATE: {today_str}
 BROADCAST: {title}
 
 1. EXECUTIVE SUMMARY:
-   - Provide 3-4 dense sentences detailing the actual lead news items, specific policy debates, caller dynamics, and overall broadcast quality.
+   - Provide 3-4 dense sentences detailing the actual lead news items, election results, guest arguments, and overall broadcast quality.
 
 2. COMPREHENSIVE SEGMENT BREAKDOWN:
-   - Chronological breakdown of each topic discussed with approximate timestamps (e.g., [12:30]).
+   - Chronological breakdown of each topic discussed.
    - Detail the core argument, specific candidate/ballot races, local/state context, and notable claims cited.
 
 3. GUESTS, INTERVIEWS & CALLERS:
@@ -204,12 +164,22 @@ BROADCAST: {title}
    - Summarize notable listener call-ins if present: caller name/location, topic raised, and host's response. If no guests or callers, state: "Solo monologue by host; no guest appearances or caller segments."
 
 4. SPONSORS, UNDERWRITING & STATION PROMOTIONS:
-   - List every business, non-profit, union, or community sponsor explicitly thanked or promoted.
+   - List every business, non-profit, union, or sponsor explicitly thanked or promoted.
    - Note any station events or upcoming AM950 show promos mentioned.
 
 5. REGULATORY, COMPLIANCE & TONE FLAGS:
    - Check for broadcast decency, FCC language concerns, unverified personal attacks, or contentious exchanges. If clean, state "Clean - No compliance flags noted."
 """
+
+    uploaded_file = None
+    if audio_available and os.path.exists(AUDIO_PATH):
+        print("Uploading audio to Gemini File API...", flush=True)
+        uploaded_file = client.files.upload(file=AUDIO_PATH)
+        print("Audio uploaded. Processing summary...", flush=True)
+        contents = [uploaded_file, prompt]
+    else:
+        print("Audio missing. Using metadata only...", flush=True)
+        contents = [prompt + f"\n\nShow Description: {description}"]
 
     gen_config = types.GenerateContentConfig(
         temperature=0.2,
@@ -224,11 +194,16 @@ BROADCAST: {title}
             try:
                 response = client.models.generate_content(
                     model=model_name,
-                    contents=prompt,
+                    contents=contents,
                     config=gen_config
                 )
                 if response and response.text:
-                    print(f"Summary successfully generated via {model_name}!", flush=True)
+                    print(f"Summary generated via {model_name}!", flush=True)
+                    if uploaded_file:
+                        try:
+                            client.files.delete(name=uploaded_file.name)
+                        except Exception:
+                            pass
                     return response.text
             except Exception as e:
                 print(f"{model_name} attempt {attempt} error: {e}", flush=True)
@@ -236,13 +211,13 @@ BROADCAST: {title}
 
     raise RuntimeError("All candidate models failed to generate content.")
 
-def send_email(subject, body, video_url):
+def send_email(subject, body, web_link):
     msg = MIMEMultipart()
     msg['From'] = EMAIL_SENDER
     msg['To'] = EMAIL_RECIPIENT
     msg['Subject'] = subject
 
-    content = body + "\n\n---\nBroadcast Link: " + video_url
+    content = body + "\n\n---\nEpisode Link: " + web_link
     msg.attach(MIMEText(content, 'plain'))
 
     print("Connecting to Gmail SMTP via SSL on port 465...", flush=True)
@@ -259,36 +234,36 @@ def main():
     with open(PROCESSED_FILE, "r") as f:
         processed_ids = set(line.strip() for line in f.readlines() if line.strip())
 
-    candidates = get_recent_streams(limit=MAX_RECENT_VIDEOS)
-    unprocessed = [vid for vid in candidates if vid not in processed_ids]
+    episodes = get_recent_episodes()
+    unprocessed = [ep for ep in episodes if ep["id"] not in processed_ids]
 
     if not unprocessed:
-        print("All recent streams have already been processed. Exiting cleanly.", flush=True)
+        print("All recent episodes have already been processed. Exiting cleanly.", flush=True)
         return
 
-    print(f"Found {len(unprocessed)} stream(s) to process.", flush=True)
+    print(f"Found {len(unprocessed)} new episode(s) to process.", flush=True)
 
-    for vid in unprocessed:
-        title = fetch_video_details(vid)
-        video_url = f"https://www.youtube.com/watch?v={vid}"
-        print(f"\nEvaluating: {title} ({vid})", flush=True)
-
-        transcript = fetch_transcript(vid)
-        if not transcript:
-            print(f"Skipping {vid} for now (transcript not generated yet). Will re-check on next run.", flush=True)
+    for ep in unprocessed:
+        print(f"\nProcessing: {ep['title']}", flush=True)
+        audio_ok = download_audio(ep["mp3_url"])
+        if not audio_ok:
+            print(f"Could not download audio for {ep['title']}. Skipping.", flush=True)
             continue
 
         try:
-            summary = generate_summary(video_url, title, transcript)
-            send_email(f"[AM950 Broadcast Summary] {title}", summary, video_url)
+            summary = generate_summary(ep["title"], ep["desc"], audio_ok)
+            send_email(f"[AM950 Broadcast Summary] {ep['title']}", summary, ep["id"])
 
-            # Record success immediately so re-runs won't duplicate
             with open(PROCESSED_FILE, "a") as f:
-                f.write(vid + "\n")
-            print(f"Successfully processed and recorded: {vid}", flush=True)
-            time.sleep(3)
+                f.write(ep["id"] + "\n")
+            print(f"Successfully processed and recorded: {ep['id']}", flush=True)
         except Exception as e:
-            print(f"Failed to process video {vid}: {e}", flush=True)
+            print(f"Failed processing {ep['title']}: {e}", flush=True)
+        finally:
+            if os.path.exists(AUDIO_PATH):
+                os.remove(AUDIO_PATH)
+
+        time.sleep(3)
 
     print("\nBatch process complete.", flush=True)
 
