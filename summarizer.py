@@ -56,7 +56,7 @@ def get_latest_stream():
     except Exception as e:
         print(f"Stream detection note: {e}", flush=True)
 
-    # Fallback to test ID if scraping fails
+    # Fallback to known broadcast if streams tab parse fails
     return "CPEGMSH1p8E", "Politics Matters with Bruce Klopfleisch", "Recent broadcast from AM950 Radio Minnesota."
 
 def fetch_video_details(video_id: str):
@@ -91,7 +91,6 @@ def identify_focus(title: str) -> str:
     return "Focus on: Local news stories, community discussion, and guest commentary."
 
 def generate_summary(video_url: str, title: str, description: str) -> str:
-    # Standard client without restrictive socket limits
     client = genai.Client(api_key=GEMINI_API_KEY)
     focus_guidance = identify_focus(title)
     today_str = datetime.datetime.now().strftime("%B %d, %Y")
@@ -151,28 +150,4 @@ def send_email(subject: str, body: str, video_url: str):
     content = f"{body}\n\n---\nBroadcast Link: {video_url}"
     msg.attach(MIMEText(content, 'plain'))
 
-    print(f"Connecting to {SMTP_SERVER}:{SMTP_PORT} via SSL...", flush=True)
-    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
-        server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-        server.send_message(msg)
-    print("Email sent successfully!", flush=True)
-
-def main():
-    if not os.path.exists(PROCESSED_FILE):
-        with open(PROCESSED_FILE, "w") as f:
-            f.write("")
-
-    with open(PROCESSED_FILE, "r") as f:
-        processed_ids = set(line.strip() for line in f.readlines())
-
-    video_id, title, desc = get_latest_stream()
-    if not video_id:
-        print("No stream found. Exiting.", flush=True)
-        return
-
-    if video_id in processed_ids:
-        print(f"Video {video_id} ('{title}') was already processed. Exiting.", flush=True)
-        return
-
-    video_url = f"https://www.youtube.com/watch?v={video_id}"
-    print(f"
+    print(f"Connecting to {SMTP_SERVER}:{SMTP_PORT}
