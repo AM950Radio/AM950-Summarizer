@@ -1,10 +1,12 @@
 import os
-import sys
+import re
+import datetime
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import requests
 from google import genai
+from google.genai import types
 
 print("--- Script Starting ---", flush=True)
 
@@ -16,49 +18,132 @@ EMAIL_RECIPIENT = os.environ.get("EMAIL_RECIPIENT")
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 465
 PROCESSED_FILE = "last_processed_video.txt"
+CHANNEL_URL = "https://www.youtube.com/@AM950Radio/streams"
 # =================================================
 
-print(f"Sender configured: {'YES' if EMAIL_SENDER else 'NO'}", flush=True)
-print(f"Recipient configured: {'YES' if EMAIL_RECIPIENT else 'NO'}", flush=True)
-print(f"Gemini API key configured: {'YES' if GEMINI_API_KEY else 'NO'}", flush=True)
+SHOW_PROMPTS = {
+    "Gaily": (
+        "Focus on: LGBTQ+ legislative and community topics, Minnesota cultural events, "
+        "personal perspectives, support resources, and guest commentary."
+    ),
+    "McNeil": (
+        "Focus on: Minnesota state and national political updates, interviews with elected officials "
+        "or candidates, caller arguments/debates, and broadcast tone."
+    ),
+    "Native Roots": (
+        "Focus on: Tribal sovereignty, Indian affairs, environmental/land/water rights, "
+        "cultural preservation, and featured indigenous leaders."
+    )
+}
 
 def get_latest_stream():
-    video_id = "CPEGMSH1p8E"
-    video_url = f"https://www.youtube.com/watch?v={video_id}"
-    title = "Episode 120 of Politics Matters with Bruce Klopfleisch"
+    """Dynamically finds the latest completed stream from AM950's streams tab."""
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9"
+    }
+    
+    resp = requests.get(CHANNEL_URL, headers=headers, timeout=15)
+    resp.raise_for_status()
+
+    # Match stream video IDs
+    vids = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"', resp.text)
+    seen = set()
+    unique_vids = [v for v in vids if not (v in seen or seen.add(v))]
+
+    for vid in unique_vids:
+        title, desc = fetch_video_details(vid)
+        # Avoid YouTube UI artifacts
+        if title and len(title) > 5 and not any(term in title.lower() for term in ["keyboard shortcuts", "live now"]):
+            return vid, title, desc
+
+    # Fallback to test ID if scraping fails
+    return "CPEGMSH1p8E", "Politics Matters with Bruce Klopfleisch", "Recent broadcast from AM950 Radio Minnesota."
+
+def fetch_video_details(video_id: str):
+    """Fetches clean title and description via oEmbed and metadata."""
+    title = ""
     desc = "Recent broadcast from AM950 Radio Minnesota."
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    
     try:
-        oembed_url = f"https://www.youtube.com/oembed?url={video_url}&format=json"
+        oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
         res = requests.get(oembed_url, timeout=10)
         if res.status_code == 200:
-            title = res.json().get("title", title)
-    except Exception as e:
-        print(f"oEmbed fetch note: {e}", flush=True)
+            title = res.json().get("title", "")
+    except Exception:
+        pass
 
-    return video_id, title, desc
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        res = requests.get(url, headers=headers, timeout=10)
+        desc_match = re.search(r'<meta name="description" content="(.*?)">', res.text)
+        if desc_match:
+            desc = desc_match.group(1).strip()
+    except Exception:
+        pass
+
+    return title, desc
+
+def identify_focus(title: str) -> str:
+    for key in SHOW_PROMPTS:
+        if re.search(key, title, re.IGNORECASE):
+            return SHOW_PROMPTS[key]
+    return "Focus on: Local news stories, community discussion, and guest commentary."
 
 def generate_summary(video_url: str, title: str, description: str) -> str:
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    client = genai.Client(
+        api_key=GEMINI_API_KEY,
+        http_options=types.HttpOptions(timeout=30.0)
+    )
+    focus_guidance = identify_focus(title)
+    today_str = datetime.datetime.now().strftime("%B %d, %Y")
+
     prompt = f"""
-    You are an executive assistant to the Station Manager at AM950 Radio.
-    Provide a concise broadcast management summary for:
+    You are an executive assistant to the Station Manager at AM950 Radio in Minnesota.
+    Today's Date: {today_str}
+    
+    Analyze this broadcast record and outline for the AM950 program:
     Show Title: {title}
     URL: {video_url}
-    Description: {description}
     
-    Format with:
-    1. EXECUTIVE SUMMARY
-    2. KEY TOPICS & SEGMENTS
-    3. GUESTS & INTERVIEWS
-    4. STATION PROMOTIONS & SPONSORS
-    5. COMPLIANCE & TONE FLAGS
+    Episode Information & Overview:
+    {description}
+    
+    Guidance:
+    {focus_guidance}
+    
+    Format the response as an executive station memo:
+    MEMORANDUM
+    DATE: {today_str}
+    BROADCAST: {title}
+    
+    1. EXECUTIVE SUMMARY:
+       - 2-3 sentences summarizing core topics, overall tone, and lead stories.
+    2. KEY TOPICS & SEGMENTS:
+       - Chronological bullet points of issues and policies discussed.
+    3. GUESTS & INTERVIEWS:
+       - Featured guests, titles, and key quotes or viewpoints.
+    4. STATION PROMOTIONS & SPONSORS:
+       - Sponsors or community announcements mentioned.
+    5. COMPLIANCE & TONE FLAGS:
+       - Any broadcast tone concerns or coarse language. If clean, state "None noted."
     """
-    print("Requesting summary from Gemini 3.8 Flash...", flush=True)
-    response = client.models.generate_content(
-        model="gemini-3.8-flash",
-        contents=prompt
-    )
-    return response.text
+
+    candidate_models = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash"]
+    for model_name in candidate_models:
+        try:
+            print(f"Generating summary with {model_name}...", flush=True)
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt
+            )
+            if response.text:
+                return response.text
+        except Exception as e:
+            print(f"{model_name} warning: {e}", flush=True)
+
+    raise RuntimeError("All Gemini candidate models failed to generate content.")
 
 def send_email(subject: str, body: str, video_url: str):
     msg = MIMEMultipart()
@@ -70,7 +155,7 @@ def send_email(subject: str, body: str, video_url: str):
     msg.attach(MIMEText(content, 'plain'))
 
     print(f"Connecting to {SMTP_SERVER}:{SMTP_PORT} via SSL...", flush=True)
-    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
+    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
         server.login(EMAIL_SENDER, EMAIL_PASSWORD)
         server.send_message(msg)
     print("Email sent successfully!", flush=True)
@@ -84,18 +169,21 @@ def main():
         processed_ids = set(line.strip() for line in f.readlines())
 
     video_id, title, desc = get_latest_stream()
+    if not video_id:
+        print("No stream found. Exiting.", flush=True)
+        return
 
     if video_id in processed_ids:
-        print(f"Notice: Video {video_id} is in {PROCESSED_FILE}. Clearing to force test run...", flush=True)
+        print(f"Video {video_id} ('{title}') was already processed. Exiting.", flush=True)
+        return
 
     video_url = f"https://www.youtube.com/watch?v={video_id}"
     print(f"Processing show: {title} ({video_url})", flush=True)
 
     summary = generate_summary(video_url, title, desc)
-    print("Summary created. Sending email...", flush=True)
     send_email(f"[AM950 Broadcast Summary] {title}", summary, video_url)
 
-    with open(PROCESSED_FILE, "w") as f:
+    with open(PROCESSED_FILE, "a") as f:
         f.write(f"{video_id}\n")
 
 if __name__ == "__main__":
