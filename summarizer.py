@@ -85,7 +85,6 @@ def fetch_transcript(video_id):
     print("Fetching broadcast transcript...", flush=True)
     raw_entries = None
 
-    # Approach 1: Try importing top-level or sub-module cleanly
     try:
         import youtube_transcript_api
         api_target = getattr(youtube_transcript_api, "YouTubeTranscriptApi", None)
@@ -101,7 +100,6 @@ def fetch_transcript(video_id):
     except Exception as e:
         print("Transcript API direct call error:", e, flush=True)
 
-    # Approach 2: If library fails, attempt timed caption extraction from watch page
     if not raw_entries:
         try:
             watch_url = f"https://www.youtube.com/watch?v={video_id}"
@@ -145,7 +143,7 @@ def identify_focus(title):
 def generate_summary(video_url, title, description, transcript_text):
     client = genai.Client(
         api_key=GEMINI_API_KEY,
-        http_options=types.HttpOptions(timeout=75000.0)
+        http_options=types.HttpOptions(timeout=60000.0)
     )
     focus_guidance = identify_focus(title)
     today_str = datetime.datetime.now().strftime("%B %d, %Y")
@@ -201,27 +199,31 @@ BROADCAST: {title}
         max_output_tokens=3000
     )
 
-    # Production models for API v1
-    candidate_models = ["gemini-3.8-flash", "gemini-3.8-pro"]
+    # Reliable models in order of stability
+    candidate_models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-3.8-flash"]
 
     for model_name in candidate_models:
-        for attempt in range(1, 4):
-            print(f"Requesting summary from {model_name} (attempt {attempt}/3)...", flush=True)
+        for attempt in range(1, 3):
+            print(f"Requesting summary from {model_name} (attempt {attempt}/2)...", flush=True)
             try:
-                response = client.models.generate_content(
+                # Use streaming to prevent deadline timeouts on large outputs
+                response_stream = client.models.generate_content_stream(
                     model=model_name,
                     contents=prompt,
                     config=gen_config
                 )
-                if response and response.text:
+                chunks = []
+                for chunk in response_stream:
+                    if chunk.text:
+                        chunks.append(chunk.text)
+                
+                full_text = "".join(chunks)
+                if len(full_text.strip()) > 50:
                     print(f"Summary successfully generated via {model_name}!", flush=True)
-                    return response.text
+                    return full_text
             except Exception as e:
                 print(f"{model_name} attempt {attempt} error: {e}", flush=True)
-                # Exponential backoff on 503/504 traffic spikes
-                sleep_time = attempt * 5
-                print(f"Waiting {sleep_time}s before retrying...", flush=True)
-                time.sleep(sleep_time)
+                time.sleep(4)
 
     raise RuntimeError("All candidate models failed to generate content.")
 
