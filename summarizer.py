@@ -6,7 +6,6 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import requests
 from google import genai
-from google.genai import types
 
 print("--- Script Starting ---", flush=True)
 
@@ -43,19 +42,19 @@ def get_latest_stream():
         "Accept-Language": "en-US,en;q=0.9"
     }
     
-    resp = requests.get(CHANNEL_URL, headers=headers, timeout=15)
-    resp.raise_for_status()
+    try:
+        resp = requests.get(CHANNEL_URL, headers=headers, timeout=15)
+        if resp.status_code == 200:
+            vids = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"', resp.text)
+            seen = set()
+            unique_vids = [v for v in vids if not (v in seen or seen.add(v))]
 
-    # Match stream video IDs
-    vids = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"', resp.text)
-    seen = set()
-    unique_vids = [v for v in vids if not (v in seen or seen.add(v))]
-
-    for vid in unique_vids:
-        title, desc = fetch_video_details(vid)
-        # Avoid YouTube UI artifacts
-        if title and len(title) > 5 and not any(term in title.lower() for term in ["keyboard shortcuts", "live now"]):
-            return vid, title, desc
+            for vid in unique_vids:
+                title, desc = fetch_video_details(vid)
+                if title and len(title) > 5 and not any(term in title.lower() for term in ["keyboard shortcuts", "live now"]):
+                    return vid, title, desc
+    except Exception as e:
+        print(f"Stream detection note: {e}", flush=True)
 
     # Fallback to test ID if scraping fails
     return "CPEGMSH1p8E", "Politics Matters with Bruce Klopfleisch", "Recent broadcast from AM950 Radio Minnesota."
@@ -92,10 +91,8 @@ def identify_focus(title: str) -> str:
     return "Focus on: Local news stories, community discussion, and guest commentary."
 
 def generate_summary(video_url: str, title: str, description: str) -> str:
-    client = genai.Client(
-        api_key=GEMINI_API_KEY,
-        http_options=types.HttpOptions(timeout=30.0)
-    )
+    # Standard client without restrictive socket limits
+    client = genai.Client(api_key=GEMINI_API_KEY)
     focus_guidance = identify_focus(title)
     today_str = datetime.datetime.now().strftime("%B %d, %Y")
 
@@ -155,7 +152,7 @@ def send_email(subject: str, body: str, video_url: str):
     msg.attach(MIMEText(content, 'plain'))
 
     print(f"Connecting to {SMTP_SERVER}:{SMTP_PORT} via SSL...", flush=True)
-    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
+    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
         server.login(EMAIL_SENDER, EMAIL_PASSWORD)
         server.send_message(msg)
     print("Email sent successfully!", flush=True)
@@ -178,13 +175,4 @@ def main():
         return
 
     video_url = f"https://www.youtube.com/watch?v={video_id}"
-    print(f"Processing show: {title} ({video_url})", flush=True)
-
-    summary = generate_summary(video_url, title, desc)
-    send_email(f"[AM950 Broadcast Summary] {title}", summary, video_url)
-
-    with open(PROCESSED_FILE, "a") as f:
-        f.write(f"{video_id}\n")
-
-if __name__ == "__main__":
-    main()
+    print(f"
