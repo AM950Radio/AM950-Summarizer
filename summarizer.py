@@ -6,6 +6,7 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import requests
+import youtube_transcript_api
 from youtube_transcript_api import YouTubeTranscriptApi
 from google import genai
 from google.genai import types
@@ -82,40 +83,46 @@ def fetch_video_details(video_id):
     return title, desc
 
 def fetch_transcript(video_id):
-    """Pulls broadcast transcript safely, handling both class and instance methods."""
+    """Pulls broadcast transcript safely using all available library bindings."""
     print("Fetching broadcast transcript...", flush=True)
-    transcript_list = None
+    raw_entries = None
 
-    # Method 1: Direct fetch via class or instance
+    # Try static module function
     try:
-        if hasattr(YouTubeTranscriptApi, 'get_transcript'):
-            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
-        else:
-            api_instance = YouTubeTranscriptApi()
-            transcript_list = api_instance.get_transcript(video_id, languages=['en'])
+        raw_entries = youtube_transcript_api.YouTubeTranscriptApi.get_transcript(video_id)
     except Exception:
         pass
 
-    # Method 2: Transcripts listing fallback (handles auto-generated captions)
-    if not transcript_list:
+    # Try instantiated fetcher
+    if not raw_entries:
         try:
-            transcript_list_obj = YouTubeTranscriptApi.list_transcripts(video_id)
-            try:
-                transcript_obj = transcript_list_obj.find_transcript(['en'])
-            except Exception:
-                transcript_obj = transcript_list_obj.find_generated_transcript(['en'])
-            transcript_list = transcript_obj.fetch()
-        except Exception as e:
-            print("Transcript unavailable or not generated yet:", e, flush=True)
-            return None
+            api = YouTubeTranscriptApi()
+            if hasattr(api, 'get_transcript'):
+                raw_entries = api.get_transcript(video_id)
+        except Exception:
+            pass
 
-    if transcript_list:
-        formatted_lines = []
-        for entry in transcript_list:
-            minutes = int(entry['start'] // 60)
-            seconds = int(entry['start'] % 60)
-            formatted_lines.append(f"[{minutes:02d}:{seconds:02d}] {entry['text']}")
-        full_text = "\n".join(formatted_lines)
+    # Try listing transcript tracks
+    if not raw_entries:
+        try:
+            track_list = youtube_transcript_api.YouTubeTranscriptApi.list_transcripts(video_id)
+            for track in track_list:
+                raw_entries = track.fetch()
+                if raw_entries:
+                    break
+        except Exception as e:
+            print("Transcript unavailable:", e, flush=True)
+
+    if raw_entries:
+        formatted = []
+        for item in raw_entries:
+            start_sec = int(item.get('start', 0))
+            minutes = start_sec // 60
+            seconds = start_sec % 60
+            text = item.get('text', '').strip()
+            if text:
+                formatted.append(f"[{minutes:02d}:{seconds:02d}] {text}")
+        full_text = "\n".join(formatted)
         print("Transcript pulled:", len(full_text), "characters", flush=True)
         return full_text
 
@@ -130,15 +137,15 @@ def identify_focus(title):
 def generate_summary(video_url, title, description, transcript_text):
     client = genai.Client(
         api_key=GEMINI_API_KEY,
-        http_options=types.HttpOptions(timeout=50000.0)
+        http_options=types.HttpOptions(timeout=60000.0)
     )
     focus_guidance = identify_focus(title)
     today_str = datetime.datetime.now().strftime("%B %d, %Y")
 
     if transcript_text:
-        source_data = "FULL BROADCAST TRANSCRIPT (with timestamps):\n" + transcript_text[:50000]
+        source_data = "FULL BROADCAST TRANSCRIPT (with timestamps):\n" + transcript_text[:40000]
     else:
-        source_data = "BROADCAST DESCRIPTION & METADATA:\n" + description
+        source_data = "BROADCAST OVERVIEW & METADATA:\n" + description
 
     prompt = f"""You are an executive assistant to the Station Manager at AM950 Radio (KTNF) in Minneapolis-St. Paul.
 Today's Date: {today_str}
@@ -183,10 +190,11 @@ BROADCAST: {title}
 
     gen_config = types.GenerateContentConfig(
         temperature=0.2,
-        max_output_tokens=3500
+        max_output_tokens=3000
     )
 
-    candidate_models = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.5-pro"]
+    # Active model roster
+    candidate_models = ["gemini-3.8-flash", "gemini-3.1-pro-preview"]
 
     for model_name in candidate_models:
         for attempt in range(1, 3):
@@ -202,7 +210,7 @@ BROADCAST: {title}
                     return response.text
             except Exception as e:
                 print(f"{model_name} error on attempt {attempt}: {e}", flush=True)
-                time.sleep(4)
+                time.sleep(3)
 
     raise RuntimeError("All candidate models failed to generate content.")
 
