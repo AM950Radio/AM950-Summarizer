@@ -7,7 +7,7 @@ import requests
 from google import genai
 
 # ================= Configuration =================
-CHANNEL_URL = "https://www.youtube.com/@AM950Radio/videos"
+STREAMS_URL = "https://www.youtube.com/@AM950Radio/streams"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 EMAIL_SENDER = os.environ.get("EMAIL_SENDER")
@@ -35,39 +35,51 @@ SHOW_PROMPTS = {
 }
 
 def get_latest_stream():
-    """Scrapes the newest show from AM950's video feed."""
+    """Scrapes the newest stream from AM950's streams tab and extracts its metadata."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
-    resp = requests.get(CHANNEL_URL, headers=headers, timeout=15)
+    resp = requests.get(STREAMS_URL, headers=headers, timeout=15)
     resp.raise_for_status()
 
-    # Match all (videoId, title) occurrences
-    matches = re.findall(r'\"videoId\":\"([a-zA-Z0-9_-]{11})\".*?\"title\":\{\"runs\":\[\{\"text\":\"(.*?)\"\}\]', resp.text)
-    
-    # Filter out YouTube player UI terms
-    ignored_titles = {"keyboard shortcuts", "play", "mute", "settings"}
-    for vid_id, vid_title in matches:
-        clean_title = vid_title.strip()
-        if clean_title.lower() not in ignored_titles and len(clean_title) > 5:
-            # Fetch video description via oEmbed/page meta
-            desc = fetch_video_description(vid_id)
-            return vid_id, clean_title, desc
+    # Find candidate video IDs on the streams page
+    video_ids = re.findall(r'/watch\?v=([a-zA-Z0-9_-]{11})', resp.text)
+    if not video_ids:
+        video_ids = re.findall(r'\"videoId\":\"([a-zA-Z0-9_-]{11})\"', resp.text)
+
+    # De-duplicate while preserving order
+    seen = set()
+    unique_ids = [v for v in video_ids if not (v in seen or seen.add(v))]
+
+    for vid_id in unique_ids:
+        title, desc = fetch_video_details(vid_id)
+        if title and len(title) > 5 and "keyboard shortcuts" not in title.lower():
+            return vid_id, title, desc
 
     return None, None, None
 
-def fetch_video_description(video_id: str) -> str:
-    """Fetches video metadata and description without hitting rate limits."""
+def fetch_video_details(video_id: str):
+    """Fetches clean title and description from the video watch page."""
     try:
         url = f"https://www.youtube.com/watch?v={video_id}"
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         res = requests.get(url, headers=headers, timeout=10)
-        desc_match = re.search(r'\"shortDescription\":\"(.*?)\"', res.text)
-        if desc_match:
-            return desc_match.group(1).encode().decode('unicode_escape')
+        
+        # Extract title
+        title_match = re.search(r'<meta name=\"title\" content=\"(.*?)\">', res.text)
+        if not title_match:
+            title_match = re.search(r'<title>(.*?) - YouTube</title>', res.text)
+        title = title_match.group(1) if title_match else ""
+
+        # Extract description
+        desc_match = re.search(r'<meta name=\"description\" content=\"(.*?)\">', res.text)
+        if not desc_match:
+            desc_match = re.search(r'\"shortDescription\":\"(.*?)\"', res.text)
+        desc = desc_match.group(1) if desc_match else "No description available."
+
+        return title.strip(), desc.strip()
     except Exception:
-        pass
-    return "No description available."
+        return "", ""
 
 def identify_focus(title: str) -> str:
     for key in SHOW_PROMPTS:
@@ -104,7 +116,6 @@ def generate_summary(video_url: str, title: str, description: str) -> str:
        - Any broadcast tone concerns or coarse language. If clean, state "None noted."
     """
 
-    # Pure text generation on Gemini 3.8 Flash (No tools = zero quota overhead on free tier)
     response = client.models.generate_content(
         model="gemini-3.8-flash",
         contents=prompt
