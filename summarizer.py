@@ -5,6 +5,7 @@ import datetime
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+import subprocess
 import requests
 from google import genai
 from google.genai import types
@@ -20,6 +21,7 @@ SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 465
 PROCESSED_FILE = "last_processed_video.txt"
 CHANNEL_URL = "https://www.youtube.com/@AM950Radio/streams"
+AUDIO_PATH = "broadcast_audio.mp3"
 # =================================================
 
 SHOW_PROMPTS = {
@@ -68,90 +70,47 @@ def fetch_video_details(video_id):
             title = res.json().get("title", "")
     except Exception:
         pass
-
-    try:
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=8)
-        desc_match = re.search(r'<meta name="description" content="(.*?)">', res.text)
-        if desc_match:
-            desc = desc_match.group(1).strip()
-    except Exception:
-        pass
-
     return title, desc
 
-def fetch_transcript(video_id):
-    """Safely extracts transcript entries across varying youtube-transcript-api versions."""
-    print("Fetching broadcast transcript...", flush=True)
-    raw_entries = None
+def download_audio(video_url):
+    """Downloads lightweight audio stream using yt-dlp."""
+    print("Downloading broadcast audio via yt-dlp...", flush=True)
+    if os.path.exists(AUDIO_PATH):
+        os.remove(AUDIO_PATH)
 
+    cmd = [
+        "yt-dlp",
+        "-f", "ba[ext=m4a]/ba/b",
+        "--extract-audio",
+        "--audio-format", "mp3",
+        "--audio-quality", "9",
+        "-o", AUDIO_PATH,
+        video_url
+    ]
     try:
-        import youtube_transcript_api
-        api_target = getattr(youtube_transcript_api, "YouTubeTranscriptApi", None)
-        if api_target:
-            if hasattr(api_target, "get_transcript"):
-                raw_entries = api_target.get_transcript(video_id)
-            elif hasattr(api_target, "list_transcripts"):
-                tl = api_target.list_transcripts(video_id)
-                for t in tl:
-                    raw_entries = t.fetch()
-                    if raw_entries:
-                        break
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if os.path.exists(AUDIO_PATH):
+            size_mb = os.path.getsize(AUDIO_PATH) / (1024 * 1024)
+            print(f"Audio downloaded: {size_mb:.2f} MB", flush=True)
+            return True
     except Exception as e:
-        print("Transcript API direct call error:", e, flush=True)
+        print("Audio download error:", e, flush=True)
 
-    if not raw_entries:
-        try:
-            watch_url = f"https://www.youtube.com/watch?v={video_id}"
-            headers = {"User-Agent": "Mozilla/5.0"}
-            res = requests.get(watch_url, headers=headers, timeout=10)
-            captions_match = re.search(r'"captionTracks":\[\{"baseUrl":"(.*?)"', res.text)
-            if captions_match:
-                caption_url = captions_match.group(1).replace(r"\u0026", "&")
-                cap_res = requests.get(caption_url, timeout=10)
-                text_matches = re.findall(r'<text start="([\d\.]+)"[^>]*>(.*?)</text>', cap_res.text)
-                if text_matches:
-                    raw_entries = []
-                    for start_time, txt in text_matches:
-                        clean_txt = re.sub(r"&[a-z]+;", " ", txt).strip()
-                        raw_entries.append({"start": float(start_time), "text": clean_txt})
-        except Exception as e:
-            print("Direct caption fallback note:", e, flush=True)
-
-    if raw_entries:
-        formatted = []
-        for item in raw_entries:
-            start_sec = int(float(item.get('start', 0)))
-            minutes = start_sec // 60
-            seconds = start_sec % 60
-            text = str(item.get('text', '')).strip()
-            if text:
-                formatted.append(f"[{minutes:02d}:{seconds:02d}] {text}")
-        full_text = "\n".join(formatted)
-        print("Transcript pulled successfully:", len(full_text), "characters", flush=True)
-        return full_text
-
-    print("Transcript unavailable; falling back to show metadata.", flush=True)
-    return None
+    return False
 
 def identify_focus(title):
     for key in SHOW_PROMPTS:
         if re.search(key, title, re.IGNORECASE):
             return SHOW_PROMPTS[key]
-    return "Focus on: Detailed policy arguments, exact guest statements, caller discussions, and local news."
+    return "Focus on: Detailed policy arguments, exact election analysis, guest statements, caller discussions, and local news."
 
-def generate_summary(video_url, title, description, transcript_text):
+def generate_summary(video_url, title, description, audio_available):
     client = genai.Client(
         api_key=GEMINI_API_KEY,
-        http_options=types.HttpOptions(timeout=60000.0)
+        http_options=types.HttpOptions(timeout=180000.0) # 3 min for audio upload/processing
     )
     focus_guidance = identify_focus(title)
     today_str = datetime.datetime.now().strftime("%B %d, %Y")
-
-    if transcript_text:
-        source_data = "FULL BROADCAST TRANSCRIPT (with timestamps):\n" + transcript_text[:35000]
-    else:
-        source_data = "BROADCAST OVERVIEW & METADATA:\n" + description
 
     prompt = f"""You are an executive assistant to the Station Manager at AM950 Radio (KTNF) in Minneapolis-St. Paul.
 Today's Date: {today_str}
@@ -163,9 +122,7 @@ URL: {video_url}
 Show Directives:
 {focus_guidance}
 
-{source_data}
-
-Write a comprehensive, granular executive station memorandum. Avoid vague generalizations; cite specific names, policy topics, caller arguments, and station announcements.
+Listen carefully to the broadcast audio attached. Produce a detailed executive memo summarizing the actual topics, guests, election results, callers, and statements made on air. Do not speculate or invent content.
 
 Format the memorandum as follows:
 
@@ -176,54 +133,64 @@ DATE: {today_str}
 BROADCAST: {title}
 
 1. EXECUTIVE SUMMARY:
-   - Provide 3-4 dense sentences detailing the core news items, policy positions taken, caller dynamics, and overall broadcast quality.
+   - Provide 3-4 dense sentences detailing the core election analysis or news items, host takeaways, and overall broadcast quality.
 
 2. COMPREHENSIVE SEGMENT BREAKDOWN:
-   - Chronological breakdown of each topic discussed with approximate timestamps (e.g., [12:30]).
-   - Detail the core argument, specific local/state context, and notable claims or statistics cited.
+   - Chronological breakdown of each topic discussed with approximate timestamps.
+   - Detail the core argument, candidate/race specifics, local/state context, and notable claims cited.
 
 3. GUESTS, INTERVIEWS & CALLERS:
-   - Identify every named guest, their organization/title, and direct bullet points summarizing their key arguments.
+   - Identify every named guest and direct bullet points summarizing their key arguments.
    - Summarize notable listener call-ins if present: caller name/location, topic raised, and host's response.
 
 4. SPONSORS, UNDERWRITING & STATION PROMOTIONS:
-   - List every business, non-profit, union, or community sponsor explicitly mentioned during breaks.
+   - List every business, union, or sponsor explicitly mentioned during breaks.
    - Note any station events or upcoming AM950 show promos mentioned.
 
 5. REGULATORY, COMPLIANCE & TONE FLAGS:
    - Check for broadcast decency, FCC language concerns, unverified personal attacks, or contentious exchanges. If clean, state "Clean - No compliance flags noted."
 """
 
+    contents = []
+    uploaded_file = None
+
+    if audio_available and os.path.exists(AUDIO_PATH):
+        print("Uploading audio to Gemini File API...", flush=True)
+        uploaded_file = client.files.upload(file=AUDIO_PATH)
+        print("Audio uploaded successfully. Processing summary...", flush=True)
+        contents = [uploaded_file, prompt]
+    else:
+        print("Falling back to text prompt with metadata...", flush=True)
+        contents = [prompt + f"\n\nShow Description: {description}"]
+
     gen_config = types.GenerateContentConfig(
         temperature=0.2,
-        max_output_tokens=3000
+        max_output_tokens=3500
     )
 
-    # Reliable models in order of stability
-    candidate_models = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-3.8-flash"]
+    candidate_models = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]
 
     for model_name in candidate_models:
         for attempt in range(1, 3):
             print(f"Requesting summary from {model_name} (attempt {attempt}/2)...", flush=True)
             try:
-                # Use streaming to prevent deadline timeouts on large outputs
-                response_stream = client.models.generate_content_stream(
+                response = client.models.generate_content(
                     model=model_name,
-                    contents=prompt,
+                    contents=contents,
                     config=gen_config
                 )
-                chunks = []
-                for chunk in response_stream:
-                    if chunk.text:
-                        chunks.append(chunk.text)
-                
-                full_text = "".join(chunks)
-                if len(full_text.strip()) > 50:
-                    print(f"Summary successfully generated via {model_name}!", flush=True)
-                    return full_text
+                if response and response.text:
+                    print(f"Summary generated successfully via {model_name}!", flush=True)
+                    # Clean up uploaded audio on Gemini servers
+                    if uploaded_file:
+                        try:
+                            client.files.delete(name=uploaded_file.name)
+                        except Exception:
+                            pass
+                    return response.text
             except Exception as e:
                 print(f"{model_name} attempt {attempt} error: {e}", flush=True)
-                time.sleep(4)
+                time.sleep(5)
 
     raise RuntimeError("All candidate models failed to generate content.")
 
@@ -262,9 +229,12 @@ def main():
     video_url = "https://www.youtube.com/watch?v=" + video_id
     print("Processing show:", title, "(" + video_url + ")", flush=True)
 
-    transcript_text = fetch_transcript(video_id)
-    summary = generate_summary(video_url, title, desc, transcript_text)
+    audio_downloaded = download_audio(video_url)
+    summary = generate_summary(video_url, title, desc, audio_downloaded)
     send_email("[AM950 Broadcast Summary] " + title, summary, video_url)
+
+    if os.path.exists(AUDIO_PATH):
+        os.remove(AUDIO_PATH)
 
     with open(PROCESSED_FILE, "a") as f:
         f.write(video_id + "\n")
