@@ -1,12 +1,11 @@
 import os
 import re
 import smtplib
-import json
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import requests
+from youtube_transcript_api import YouTubeTranscriptApi
 from google import genai
-from google.genai.types import Part
 
 # ================= Configuration =================
 STREAMS_URL = "https://www.youtube.com/@AM950Radio/streams"
@@ -44,18 +43,23 @@ def get_latest_stream():
     resp = requests.get(STREAMS_URL, headers=headers, timeout=15)
     resp.raise_for_status()
 
-    # Find the videoId and title from YouTube's initial page state
+    # Match latest videoId and title
     matches = re.findall(r'\"videoId\":\"([a-zA-Z0-9_-]{11})\".*?\"title\":\{\"runs\":\[\{\"text\":\"(.*?)\"\}\]', resp.text)
     if matches:
         video_id, title = matches[0]
         return video_id, title
 
-    # Fallback pattern if layout slightly differs
     id_match = re.search(r'\"videoId\":\"([a-zA-Z0-9_-]{11})\"', resp.text)
     if id_match:
         return id_match.group(1), "AM950 Broadcast"
 
     return None, None
+
+def get_transcript_text(video_id: str) -> str:
+    """Fetches YouTube's auto-generated captions."""
+    ytt = YouTubeTranscriptApi()
+    transcript_list = ytt.fetch(video_id)
+    return " ".join([entry['text'] for entry in transcript_list])
 
 def identify_focus(title: str) -> str:
     for key in SHOW_PROMPTS:
@@ -63,13 +67,13 @@ def identify_focus(title: str) -> str:
             return SHOW_PROMPTS[key]
     return "Focus on: Local news stories, community discussion, guest highlights, and potential broadcast flags."
 
-def generate_summary(video_url: str, title: str) -> str:
+def generate_summary(transcript_text: str, title: str) -> str:
     client = genai.Client(api_key=GEMINI_API_KEY)
     focus_guidance = identify_focus(title)
 
     prompt = f"""
     You are an executive assistant to the Station Manager at AM950 Radio.
-    Analyze the broadcast content from this YouTube live stream for: "{title}".
+    Analyze this broadcast transcript for the show: "{title}".
     
     Show Focus:
     {focus_guidance}
@@ -85,14 +89,14 @@ def generate_summary(video_url: str, title: str) -> str:
        - Station sponsors, upcoming events, or host promotions noted on-air.
     5. COMPLIANCE & TONE FLAGS:
        - Note any potential broadcast flags (coarse language, personal attacks, or unverified claims) needing management review. If clean, write "None noted."
+    
+    TRANSCRIPT:
+    {transcript_text[:100000]}
     """
 
     response = client.models.generate_content(
-        model="gemini-3.8-flash",
-        contents=[
-            Part.from_uri(file_uri=video_url, mime_type="video/mp4"),
-            prompt
-        ]
+        model="gemini-2.5-flash",
+        contents=prompt
     )
     return response.text
 
@@ -129,9 +133,16 @@ def main():
         return
 
     video_url = f"https://www.youtube.com/watch?v={video_id}"
-    print(f"Processing new stream: {title} ({video_url})")
+    print(f"Fetching transcript for: {title} ({video_url})")
     
-    summary = generate_summary(video_url, title)
+    try:
+        transcript_text = get_transcript_text(video_id)
+    except Exception as e:
+        print(f"Could not load transcript for {video_id}: {e}")
+        return
+
+    print("Generating summary with Gemini...")
+    summary = generate_summary(transcript_text, title)
     send_email(f"[AM950 Summary] {title}", summary, video_url)
 
     with open(PROCESSED_FILE, "a") as f:
