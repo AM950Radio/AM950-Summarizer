@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import datetime
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -86,10 +87,10 @@ def identify_focus(title):
     return "Focus on: Local news stories, community discussion, and guest commentary."
 
 def generate_summary(video_url, title, description):
-    # 120,000 milliseconds = 120 seconds (2 minutes)
+    # 45,000 ms = 45 seconds timeout
     client = genai.Client(
         api_key=GEMINI_API_KEY,
-        http_options=types.HttpOptions(timeout=120000.0)
+        http_options=types.HttpOptions(timeout=45000.0)
     )
     focus_guidance = identify_focus(title)
     today_str = datetime.datetime.now().strftime("%B %d, %Y")
@@ -124,19 +125,30 @@ BROADCAST: {title}
    - Any broadcast tone concerns or coarse language. If clean, state "None noted."
 """
 
-    print("Requesting summary from gemini-3.8-flash...", flush=True)
-    try:
-        response = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=prompt
-        )
-        if response and response.text:
-            print("Summary generated successfully!", flush=True)
-            return response.text
-    except Exception as e:
-        print("Gemini API error:", e, flush=True)
+    gen_config = types.GenerateContentConfig(
+        temperature=0.2,
+        max_output_tokens=1500
+    )
 
-    raise RuntimeError("Gemini failed to generate content.")
+    # Retry loop: attempt up to 3 times to handle backend stalls/503s
+    for attempt in range(1, 4):
+        print(f"Requesting summary from gemini-3.8-flash (attempt {attempt}/3)...", flush=True)
+        try:
+            response = client.models.generate_content(
+                model="gemini-3.8-flash",
+                contents=prompt,
+                config=gen_config
+            )
+            if response and response.text:
+                print("Summary generated successfully!", flush=True)
+                return response.text
+        except Exception as e:
+            print(f"Attempt {attempt} failed with: {e}", flush=True)
+            if attempt < 3:
+                print("Waiting 5 seconds before retrying...", flush=True)
+                time.sleep(5)
+
+    raise RuntimeError("Gemini failed after 3 attempts.")
 
 def send_email(subject, body, video_url):
     msg = MIMEMultipart()
