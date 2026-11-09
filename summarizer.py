@@ -6,6 +6,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import requests
 from google import genai
+from google.genai import types
 
 print("--- Script Starting ---", flush=True)
 
@@ -36,13 +37,13 @@ SHOW_PROMPTS = {
 }
 
 def get_latest_stream():
-    """Dynamically finds the latest completed stream from AM950's streams tab."""
+    """Extracts the latest stream, falling back cleanly to the test stream if live scraping is shielded."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9"
     }
     try:
-        resp = requests.get(CHANNEL_URL, headers=headers, timeout=15)
+        resp = requests.get(CHANNEL_URL, headers=headers, timeout=10)
         if resp.status_code == 200:
             vids = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"', resp.text)
             seen = set()
@@ -57,13 +58,12 @@ def get_latest_stream():
     return "CPEGMSH1p8E", "Politics Matters with Bruce Klopfleisch", "Recent broadcast from AM950 Radio Minnesota."
 
 def fetch_video_details(video_id):
-    """Fetches clean title and description via oEmbed and metadata."""
     title = ""
     desc = "Recent broadcast from AM950 Radio Minnesota."
-    url = f"https://www.youtube.com/watch?v={video_id}"
+    url = "https://www.youtube.com/watch?v=" + video_id
     try:
-        oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
-        res = requests.get(oembed_url, timeout=10)
+        oembed_url = "https://www.youtube.com/oembed?url=" + url + "&format=json"
+        res = requests.get(oembed_url, timeout=8)
         if res.status_code == 200:
             title = res.json().get("title", "")
     except Exception:
@@ -71,7 +71,7 @@ def fetch_video_details(video_id):
 
     try:
         headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=10)
+        res = requests.get(url, headers=headers, timeout=8)
         desc_match = re.search(r'<meta name="description" content="(.*?)">', res.text)
         if desc_match:
             desc = desc_match.group(1).strip()
@@ -87,7 +87,10 @@ def identify_focus(title):
     return "Focus on: Local news stories, community discussion, and guest commentary."
 
 def generate_summary(video_url, title, description):
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    client = genai.Client(
+        api_key=GEMINI_API_KEY,
+        http_options=types.HttpOptions(timeout=90.0)
+    )
     focus_guidance = identify_focus(title)
     today_str = datetime.datetime.now().strftime("%B %d, %Y")
 
@@ -124,15 +127,16 @@ BROADCAST: {title}
     candidate_models = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash"]
     for model_name in candidate_models:
         try:
-            print("Generating summary with:", model_name, flush=True)
+            print("Requesting summary from:", model_name, flush=True)
             response = client.models.generate_content(
                 model=model_name,
                 contents=prompt
             )
             if response.text:
+                print("Summary generated successfully from:", model_name, flush=True)
                 return response.text
         except Exception as e:
-            print(model_name, "warning:", e, flush=True)
+            print(model_name, "error/warning:", e, flush=True)
 
     raise RuntimeError("All Gemini candidate models failed to generate content.")
 
@@ -145,8 +149,8 @@ def send_email(subject, body, video_url):
     content = body + "\n\n---\nBroadcast Link: " + video_url
     msg.attach(MIMEText(content, 'plain'))
 
-    print("Connecting to Gmail SMTP via SSL...", flush=True)
-    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
+    print("Connecting to Gmail SMTP via SSL on port 465...", flush=True)
+    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=25) as server:
         server.login(EMAIL_SENDER, EMAIL_PASSWORD)
         server.send_message(msg)
     print("Email sent successfully!", flush=True)
@@ -169,13 +173,14 @@ def main():
         return
 
     video_url = "https://www.youtube.com/watch?v=" + video_id
-    print("Processing show:", title, video_url, flush=True)
+    print("Processing show:", title, "(" + video_url + ")", flush=True)
 
     summary = generate_summary(video_url, title, desc)
     send_email("[AM950 Broadcast Summary] " + title, summary, video_url)
 
     with open(PROCESSED_FILE, "a") as f:
         f.write(video_id + "\n")
+    print("Process complete.", flush=True)
 
 if __name__ == "__main__":
     main()
