@@ -6,6 +6,7 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import requests
+from youtube_transcript_api import YouTubeTranscriptApi
 from google import genai
 from google.genai import types
 
@@ -24,22 +25,22 @@ CHANNEL_URL = "https://www.youtube.com/@AM950Radio/streams"
 
 SHOW_PROMPTS = {
     "Gaily": (
-        "Focus on: LGBTQ+ legislative and community topics, Minnesota cultural events, "
-        "personal perspectives, support resources, and guest commentary."
+        "Focus on: Specific LGBTQ+ legislation, local Twin Cities community organizers, "
+        "trans/queer rights initiatives, upcoming rallies, cultural events, and direct caller quotes."
     ),
     "McNeil": (
-        "Focus on: Minnesota state and national political updates, interviews with elected officials "
-        "or candidates, caller arguments/debates, and broadcast tone."
+        "Focus on: Specific named Minnesota state legislators/officials, contentious caller debates, "
+        "local and national policy bills, host opinions, and broadcast rhetoric."
     ),
     "Native Roots": (
-        "Focus on: Tribal sovereignty, Indian affairs, environmental/land/water rights, "
-        "cultural preservation, and featured indigenous leaders."
+        "Focus on: Specific tribal governments, treaty rights, pipeline/water/land defense cases, "
+        "indigenous community leaders, cultural preservation, and state/federal policy actions."
     )
 }
 
 def get_latest_stream():
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept-Language": "en-US,en;q=0.9"
     }
     try:
@@ -80,59 +81,90 @@ def fetch_video_details(video_id):
 
     return title, desc
 
+def fetch_transcript(video_id):
+    """Pulls full spoken transcript from YouTube with approximate minute stamps."""
+    try:
+        print("Fetching broadcast transcript...", flush=True)
+        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+        formatted_lines = []
+        for entry in transcript_list:
+            minutes = int(entry['start'] // 60)
+            seconds = int(entry['start'] % 60)
+            formatted_lines.append(f"[{minutes:02d}:{seconds:02d}] {entry['text']}")
+        full_text = "\n".join(formatted_lines)
+        print(f"Transcript pulled: {len(full_text)} characters", flush=True)
+        return full_text
+    except Exception as e:
+        print(f"Transcript unavailable or not generated yet: {e}", flush=True)
+        return None
+
 def identify_focus(title):
     for key in SHOW_PROMPTS:
         if re.search(key, title, re.IGNORECASE):
             return SHOW_PROMPTS[key]
-    return "Focus on: Local news stories, community discussion, and guest commentary."
+    return "Focus on: Detailed policy arguments, exact guest statements, caller discussions, and local news."
 
-def generate_summary(video_url, title, description):
-    # 45,000 ms = 45 seconds timeout
+def generate_summary(video_url, title, description, transcript_text):
     client = genai.Client(
         api_key=GEMINI_API_KEY,
-        http_options=types.HttpOptions(timeout=45000.0)
+        http_options=types.HttpOptions(timeout=60000.0)
     )
     focus_guidance = identify_focus(title)
     today_str = datetime.datetime.now().strftime("%B %d, %Y")
 
-    prompt = f"""You are an executive assistant to the Station Manager at AM950 Radio in Minnesota.
+    if transcript_text:
+        source_data = f"FULL BROADCAST TRANSCRIPT (with timestamps):\n{transcript_text[:50000]}"
+    else:
+        source_data = f"BROADCAST DESCRIPTION & METADATA:\n{description}"
+
+    prompt = f"""You are an executive assistant to the Station Manager at AM950 Radio (KTNF) in Minneapolis-St. Paul.
 Today's Date: {today_str}
 
-Analyze this broadcast record and outline for the AM950 program:
+Analyze this AM950 broadcast:
 Show Title: {title}
 URL: {video_url}
 
-Episode Information & Overview:
-{description}
-
-Guidance:
+Show Directives:
 {focus_guidance}
 
-Format the response as an executive station memo:
+{source_data}
+
+Write a comprehensive, granular executive station memorandum. Avoid vague generalizations; name specific individuals, exact policy/bill numbers, explicit arguments made by callers or hosts, and specific station sponsors.
+
+Format the memorandum as follows:
+
 MEMORANDUM
+TO: Station Manager, AM950 KTNF
+FROM: Executive Assistant
 DATE: {today_str}
 BROADCAST: {title}
 
 1. EXECUTIVE SUMMARY:
-   - 2-3 sentences summarizing core topics, overall tone, and lead stories.
-2. KEY TOPICS & SEGMENTS:
-   - Chronological bullet points of issues and policies discussed.
-3. GUESTS & INTERVIEWS:
-   - Featured guests, titles, and key quotes or viewpoints.
-4. STATION PROMOTIONS & SPONSORS:
-   - Sponsors or community announcements mentioned.
-5. COMPLIANCE & TONE FLAGS:
-   - Any broadcast tone concerns or coarse language. If clean, state "None noted."
+   - Provide 3-4 dense sentences detailing the core news items, policy positions taken, caller dynamics, and overall broadcast quality.
+
+2. COMPREHENSIVE SEGMENT BREAKDOWN:
+   - Chronological breakdown of each topic discussed with approximate timestamps (e.g., [12:30]).
+   - For each topic, detail: the core conflict or argument, specific local/state context, and notable claims or statistics cited.
+
+3. GUESTS, INTERVIEWS & CALLERS:
+   - Identify every named guest, their organization/title, and 2-3 direct bullet points summarizing their key arguments and direct quotes.
+   - Summarize notable listener call-ins: caller name/location, topic raised, and host's response.
+
+4. SPONSORS, UNDERWRITING & STATION PROMOTIONS:
+   - List every business, non-profit, union, or community sponsor explicitly mentioned or thanked during breaks.
+   - Note any station events, pledge drives, or upcoming AM950 show promos mentioned.
+
+5. REGULATORY, COMPLIANCE & TONE FLAGS:
+   - Check for broadcast decency, FCC language concerns, unverified personal attacks, or contentious exchanges. If clean, state "Clean - No compliance flags noted."
 """
 
     gen_config = types.GenerateContentConfig(
         temperature=0.2,
-        max_output_tokens=1500
+        max_output_tokens=3500
     )
 
-    # Retry loop: attempt up to 3 times to handle backend stalls/503s
     for attempt in range(1, 4):
-        print(f"Requesting summary from gemini-3.8-flash (attempt {attempt}/3)...", flush=True)
+        print(f"Requesting detailed summary from gemini-3.8-flash (attempt {attempt}/3)...", flush=True)
         try:
             response = client.models.generate_content(
                 model="gemini-3.8-flash",
@@ -140,12 +172,11 @@ BROADCAST: {title}
                 config=gen_config
             )
             if response and response.text:
-                print("Summary generated successfully!", flush=True)
+                print("Detailed summary generated successfully!", flush=True)
                 return response.text
         except Exception as e:
             print(f"Attempt {attempt} failed with: {e}", flush=True)
             if attempt < 3:
-                print("Waiting 5 seconds before retrying...", flush=True)
                 time.sleep(5)
 
     raise RuntimeError("Gemini failed after 3 attempts.")
@@ -185,7 +216,8 @@ def main():
     video_url = "https://www.youtube.com/watch?v=" + video_id
     print("Processing show:", title, "(" + video_url + ")", flush=True)
 
-    summary = generate_summary(video_url, title, desc)
+    transcript_text = fetch_transcript(video_id)
+    summary = generate_summary(video_url, title, desc, transcript_text)
     send_email("[AM950 Broadcast Summary] " + title, summary, video_url)
 
     with open(PROCESSED_FILE, "a") as f:
