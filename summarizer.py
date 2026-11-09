@@ -1,10 +1,11 @@
 import os
 import re
+import time
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import requests
-from youtube_transcript_api import YouTubeTranscriptApi
+import yt_dlp
 from google import genai
 
 # ================= Configuration =================
@@ -43,7 +44,6 @@ def get_latest_stream():
     resp = requests.get(STREAMS_URL, headers=headers, timeout=15)
     resp.raise_for_status()
 
-    # Match latest videoId and title
     matches = re.findall(r'\"videoId\":\"([a-zA-Z0-9_-]{11})\".*?\"title\":\{\"runs\":\[\{\"text\":\"(.*?)\"\}\]', resp.text)
     if matches:
         video_id, title = matches[0]
@@ -55,11 +55,31 @@ def get_latest_stream():
 
     return None, None
 
-def get_transcript_text(video_id: str) -> str:
-    """Fetches YouTube's auto-generated captions."""
-    ytt = YouTubeTranscriptApi()
-    transcript_list = ytt.fetch(video_id)
-    return " ".join([entry['text'] for entry in transcript_list])
+def download_audio(video_url: str) -> str:
+    """Downloads audio in low-bitrate m4a/mp3 for fast transfer."""
+    output_filename = "stream_audio.m4a"
+    if os.path.exists(output_filename):
+        os.remove(output_filename)
+
+    ydl_opts = {
+        'format': 'ba[ext=m4a]/ba/b',
+        'outtmpl': 'stream_audio.%(ext)s',
+        'quiet': True,
+        'no_warnings': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios']
+            }
+        }
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        ydl.download([video_url])
+
+    for ext in ['m4a', 'mp3', 'webm', 'opus']:
+        fname = f"stream_audio.{ext}"
+        if os.path.exists(fname):
+            return fname
+    raise FileNotFoundError("Audio download failed.")
 
 def identify_focus(title: str) -> str:
     for key in SHOW_PROMPTS:
@@ -67,13 +87,21 @@ def identify_focus(title: str) -> str:
             return SHOW_PROMPTS[key]
     return "Focus on: Local news stories, community discussion, guest highlights, and potential broadcast flags."
 
-def generate_summary(transcript_text: str, title: str) -> str:
+def generate_summary(audio_path: str, title: str) -> str:
     client = genai.Client(api_key=GEMINI_API_KEY)
     focus_guidance = identify_focus(title)
 
+    print(f"Uploading audio ({audio_path}) to Gemini File API...")
+    audio_file = client.files.upload(file=audio_path)
+
+    # Allow brief moment if file is processing
+    while audio_file.state.name == "PROCESSING":
+        time.sleep(3)
+        audio_file = client.files.get(name=audio_file.name)
+
     prompt = f"""
     You are an executive assistant to the Station Manager at AM950 Radio.
-    Analyze this broadcast transcript for the show: "{title}".
+    Analyze the full audio from this radio broadcast for: "{title}".
     
     Show Focus:
     {focus_guidance}
@@ -89,15 +117,20 @@ def generate_summary(transcript_text: str, title: str) -> str:
        - Station sponsors, upcoming events, or host promotions noted on-air.
     5. COMPLIANCE & TONE FLAGS:
        - Note any potential broadcast flags (coarse language, personal attacks, or unverified claims) needing management review. If clean, write "None noted."
-    
-    TRANSCRIPT:
-    {transcript_text[:100000]}
     """
 
+    print("Generating summary...")
     response = client.models.generate_content(
         model="gemini-2.5-flash",
-        contents=prompt
+        contents=[audio_file, prompt]
     )
+
+    # Clean up uploaded cloud file
+    try:
+        client.files.delete(name=audio_file.name)
+    except Exception:
+        pass
+
     return response.text
 
 def send_email(subject: str, body: str, video_url: str):
@@ -133,20 +166,17 @@ def main():
         return
 
     video_url = f"https://www.youtube.com/watch?v={video_id}"
-    print(f"Fetching transcript for: {title} ({video_url})")
+    print(f"Processing stream: {title} ({video_url})")
     
+    audio_file = download_audio(video_url)
     try:
-        transcript_text = get_transcript_text(video_id)
-    except Exception as e:
-        print(f"Could not load transcript for {video_id}: {e}")
-        return
-
-    print("Generating summary with Gemini...")
-    summary = generate_summary(transcript_text, title)
-    send_email(f"[AM950 Summary] {title}", summary, video_url)
-
-    with open(PROCESSED_FILE, "a") as f:
-        f.write(f"{video_id}\n")
+        summary = generate_summary(audio_file, title)
+        send_email(f"[AM950 Summary] {title}", summary, video_url)
+        with open(PROCESSED_FILE, "a") as f:
+            f.write(f"{video_id}\n")
+    finally:
+        if os.path.exists(audio_file):
+            os.remove(audio_file)
 
 if __name__ == "__main__":
     main()
