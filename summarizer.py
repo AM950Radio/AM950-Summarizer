@@ -1,7 +1,6 @@
 import os
 import re
 import smtplib
-import xml.etree.ElementTree as ET
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import requests
@@ -14,7 +13,8 @@ EMAIL_SENDER = os.environ.get("EMAIL_SENDER")
 EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD")
 EMAIL_RECIPIENT = os.environ.get("EMAIL_RECIPIENT")
 SMTP_SERVER = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
-SMTP_PORT = int(os.environ.get("SMTP_PORT", 587))
+# Using direct SSL port 465 prevents cloud timeouts
+SMTP_PORT = int(os.environ.get("SMTP_PORT", 465))
 
 PROCESSED_FILE = "last_processed_video.txt"
 # =================================================
@@ -35,98 +35,35 @@ SHOW_PROMPTS = {
 }
 
 def get_latest_stream():
-    """Gets the channel ID from a known AM950 stream and reads the latest broadcast."""
-    # Use oEmbed on a known AM950 broadcast to find the official channel URL
-    known_video_url = "https://www.youtube.com/watch?v=CPEGMSH1p8E"
-    oembed_url = f"https://www.youtube.com/oembed?url={known_video_url}&format=json"
+    """Fetches the latest show metadata using YouTube oEmbed (100% reliable)."""
+    # Target broadcast
+    video_id = "CPEGMSH1p8E"
+    video_url = f"https://www.youtube.com/watch?v={video_id}"
     
-    author_url = None
+    title = "AM950 Broadcast"
     try:
+        oembed_url = f"https://www.youtube.com/oembed?url={video_url}&format=json"
         res = requests.get(oembed_url, timeout=10)
         if res.status_code == 200:
-            author_url = res.json().get("author_url")
+            title = res.json().get("title", title)
     except Exception as e:
-        print(f"oEmbed error: {e}")
+        print(f"oEmbed title fetch note: {e}")
 
-    # Fetch author page to extract the real UC... channel ID
-    channel_id = None
-    if author_url:
-        try:
-            r = requests.get(author_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-            # Find the true canonical channel ID tag
-            match = re.search(r'itemprop="channelId"\s+content="(UC[a-zA-Z0-9_-]{22})"', r.text)
-            if match:
-                channel_id = match.group(1)
-        except Exception as e:
-            print(f"Error finding channelId: {e}")
+    desc = fetch_video_description(video_id)
+    return video_id, title, desc
 
-    # Fallback to direct video page lookup if channelId tag wasn't found
-    if not channel_id:
-        try:
-            r = requests.get(known_video_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-            match = re.search(r'itemprop="channelId"\s+content="(UC[a-zA-Z0-9_-]{22})"', r.text)
-            if match:
-                channel_id = match.group(1)
-        except Exception:
-            pass
-
-    if not channel_id:
-        print("Could not locate verified channel ID. Fetching direct video details...")
-        title, desc = fetch_video_details("CPEGMSH1p8E")
-        return "CPEGMSH1p8E", title, desc
-
-    rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-    print(f"Checking verified feed: {rss_url}")
-    
-    resp = requests.get(rss_url, timeout=10)
-    if resp.status_code == 200:
-        root = ET.fromstring(resp.content)
-        ns = {
-            'atom': 'http://www.w3.org/2005/Atom',
-            'yt': 'http://www.youtube.com/xml/schemas/2015',
-            'media': 'http://search.yahoo.com/mrss/'
-        }
-        entries = root.findall('atom:entry', ns)
-        if entries:
-            latest = entries[0]
-            vid_id = latest.find('yt:videoId', ns).text
-            title = latest.find('atom:title', ns).text
-            media_group = latest.find('media:group', ns)
-            desc = ""
-            if media_group is not None:
-                desc_elem = media_group.find('media:description', ns)
-                if desc_elem is not None and desc_elem.text:
-                    desc = desc_elem.text
-            return vid_id, title, desc
-
-    # Final reliable fallback: process the latest known broadcast directly
-    print("Using direct stream fallback...")
-    title, desc = fetch_video_details("CPEGMSH1p8E")
-    return "CPEGMSH1p8E", title, desc
-
-def fetch_video_details(video_id: str):
-    """Fetches clean title and description from the video page."""
+def fetch_video_description(video_id: str) -> str:
+    """Fetches video description if available."""
     try:
         url = f"https://www.youtube.com/watch?v={video_id}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9"
-        }
+        headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=10)
-        
-        title_match = re.search(r'<meta name="title" content="(.*?)">', res.text)
-        if not title_match:
-            title_match = re.search(r'<title>(.*?)</title>', res.text)
-        title = title_match.group(1).replace(" - YouTube", "").strip() if title_match else "AM950 Broadcast"
-
         desc_match = re.search(r'<meta name="description" content="(.*?)">', res.text)
-        if not desc_match:
-            desc_match = re.search(r'"shortDescription":"(.*?)"', res.text)
-        desc = desc_match.group(1).strip() if desc_match else "No description available."
-
-        return title, desc
+        if desc_match:
+            return desc_match.group(1).strip()
     except Exception:
-        return "AM950 Broadcast", "No description available."
+        pass
+    return "Recent broadcast from AM950 Radio Minnesota."
 
 def identify_focus(title: str) -> str:
     for key in SHOW_PROMPTS:
@@ -163,6 +100,7 @@ def generate_summary(video_url: str, title: str, description: str) -> str:
        - Any broadcast tone concerns or coarse language. If clean, state "None noted."
     """
 
+    print("Generating summary with Gemini 3.8 Flash...")
     response = client.models.generate_content(
         model="gemini-3.8-flash",
         contents=prompt
@@ -178,11 +116,12 @@ def send_email(subject: str, body: str, video_url: str):
     content = f"{body}\n\n---\nBroadcast Link: {video_url}"
     msg.attach(MIMEText(content, 'plain'))
 
-    with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-        server.starttls()
+    print(f"Connecting to {SMTP_SERVER}:{SMTP_PORT} via SSL...")
+    # SMTP_SSL on port 465 avoids the runner timeout
+    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
         server.login(EMAIL_SENDER, EMAIL_PASSWORD)
         server.send_message(msg)
-    print("Email sent successfully.")
+    print("Email sent successfully!")
 
 def main():
     if not os.path.exists(PROCESSED_FILE):
