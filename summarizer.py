@@ -22,19 +22,19 @@ SMTP_PORT = 465
 PROCESSED_FILE = "last_processed_video.txt"
 AUDIO_PATH = "broadcast_episode.mp3"
 
-# Official RSS feeds for targeted AM950 shows
+# Feeds specifically for your target weekday shows
 FEEDS = {
-    "Politics Matters": "https://www.am950radio.com/category/podcasts/pm/feed/",
-    "Matt McNeil": "https://www.am950radio.com/category/podcasts/mcneil/feed/",
-    "Native Roots": "https://www.am950radio.com/category/podcasts/native-roots/feed/",
-    "Station Feed": "https://www.am950radio.com/feed/"
+    "The Matt McNeil Show": "https://www.am950radio.com/category/podcasts/mcneil/feed/",
+    "Native Roots Radio": "https://www.am950radio.com/category/podcasts/native-roots/feed/",
+    "The Gaily Show": "https://www.am950radio.com/category/podcasts/the-gaily-show/feed/",
+    "Politics Matters": "https://www.am950radio.com/category/podcasts/pm/feed/"
 }
 # =================================================
 
 SHOW_PROMPTS = {
-    "Politics Matters": (
-        "Focus on: Minnesota legislative priorities, election post-mortems, state budget impacts, "
-        "progressive public-affairs analysis, and detailed guest arguments."
+    "Gaily": (
+        "Focus on: Specific LGBTQ+ legislation, local Twin Cities community organizers, "
+        "trans/queer rights initiatives, upcoming rallies, cultural events, and direct caller quotes."
     ),
     "McNeil": (
         "Focus on: Specific named Minnesota state legislators/officials, contentious caller debates, "
@@ -43,11 +43,15 @@ SHOW_PROMPTS = {
     "Native Roots": (
         "Focus on: Specific tribal governments, treaty rights, pipeline/water/land defense cases, "
         "indigenous community leaders, cultural preservation, and state/federal policy actions."
+    ),
+    "Politics Matters": (
+        "Focus on: Minnesota legislative priorities, election post-mortems, state budget impacts, "
+        "progressive public-affairs analysis, and detailed guest arguments."
     )
 }
 
 def get_recent_episodes():
-    """Scrapes RSS feeds for recent episodes containing downloadable MP3 enclosures."""
+    """Fetches ONLY the latest single episode per targeted show."""
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     episodes = []
     seen_ids = set()
@@ -57,17 +61,18 @@ def get_recent_episodes():
             print(f"Checking feed: {show_name}...", flush=True)
             resp = requests.get(feed_url, headers=headers, timeout=12)
             if resp.status_code != 200:
+                print(f"Feed returned status {resp.status_code} for {show_name}", flush=True)
                 continue
 
             root = ET.fromstring(resp.content)
-            items = root.findall(".//item")
-            for item in items[:3]:  # Check up to 3 latest per show
-                title = item.find("title").text if item.find("title") is not None else "AM950 Broadcast"
+            # Find only the single latest episode (index 0)
+            item = root.find(".//item")
+            if item is not None:
+                title = item.find("title").text if item.find("title") is not None else show_name
                 link = item.find("link").text if item.find("link") is not None else ""
                 desc = item.find("description").text if item.find("description") is not None else ""
                 clean_desc = re.sub(r'<[^>]+>', '', desc).strip()
 
-                # Find direct MP3 url
                 mp3_url = None
                 enclosure = item.find("enclosure")
                 if enclosure is not None and "url" in enclosure.attrib:
@@ -90,11 +95,11 @@ def get_recent_episodes():
         except Exception as e:
             print(f"Feed error for {show_name}: {e}", flush=True)
 
-    print(f"Discovered {len(episodes)} total episode candidate(s).", flush=True)
+    print(f"Discovered {len(episodes)} target show episode(s).", flush=True)
     return episodes
 
 def download_audio(mp3_url):
-    """Downloads audio directly from the station's CDN."""
+    """Downloads audio directly from the host CDN."""
     print(f"Downloading MP3 from {mp3_url}...", flush=True)
     if os.path.exists(AUDIO_PATH):
         os.remove(AUDIO_PATH)
@@ -238,7 +243,7 @@ def main():
     unprocessed = [ep for ep in episodes if ep["id"] not in processed_ids]
 
     if not unprocessed:
-        print("All recent episodes have already been processed. Exiting cleanly.", flush=True)
+        print("All recent target episodes have already been processed. Exiting cleanly.", flush=True)
         return
 
     print(f"Found {len(unprocessed)} new episode(s) to process.", flush=True)
