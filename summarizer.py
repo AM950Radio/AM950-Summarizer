@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -98,53 +99,23 @@ def generate_summary(video_url: str, title: str, description: str) -> str:
        - Any broadcast tone concerns or coarse language. If clean, state "None noted."
     """
 
-    print("Generating summary with Gemini 3.8 Flash...")
-    response = client.models.generate_content(
-        model="gemini-3.8-flash",
-        contents=prompt
-    )
-    return response.text
+    candidate_models = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash"]
+    
+    for model_name in candidate_models:
+        for attempt in range(2):
+            try:
+                print(f"Generating summary with {model_name} (attempt {attempt + 1})...")
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt
+                )
+                if response.text:
+                    return response.text
+            except Exception as e:
+                print(f"{model_name} error: {e}")
+                time.sleep(3)
+                
+    raise RuntimeError("All Gemini candidate models failed to generate content.")
 
 def send_email(subject: str, body: str, video_url: str):
-    msg = MIMEMultipart()
-    msg['From'] = EMAIL_SENDER
-    msg['To'] = EMAIL_RECIPIENT
-    msg['Subject'] = subject
-    
-    content = f"{body}\n\n---\nBroadcast Link: {video_url}"
-    msg.attach(MIMEText(content, 'plain'))
-
-    print(f"Connecting to {SMTP_SERVER}:{SMTP_PORT} via SSL...")
-    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
-        server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-        server.send_message(msg)
-    print("Email sent successfully!")
-
-def main():
-    if not os.path.exists(PROCESSED_FILE):
-        with open(PROCESSED_FILE, "w") as f:
-            f.write("")
-
-    with open(PROCESSED_FILE, "r") as f:
-        processed_ids = set(line.strip() for line in f.readlines())
-
-    video_id, title, desc = get_latest_stream()
-    if not video_id:
-        print("No stream found. Exiting.")
-        return
-
-    if video_id in processed_ids:
-        print(f"Video {video_id} ('{title}') was already processed. Exiting.")
-        return
-
-    video_url = f"https://www.youtube.com/watch?v={video_id}"
-    print(f"Processing show: {title} ({video_url})")
-
-    summary = generate_summary(video_url, title, desc)
-    send_email(f"[AM950 Broadcast Summary] {title}", summary, video_url)
-
-    with open(PROCESSED_FILE, "a") as f:
-        f.write(f"{video_id}\n")
-
-if __name__ == "__main__":
-    main()
+    msg
