@@ -1,12 +1,11 @@
 import os
 import re
-import time
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import requests
-import yt_dlp
 from google import genai
+from google.genai import types
 
 # ================= Configuration =================
 STREAMS_URL = "https://www.youtube.com/@AM950Radio/streams"
@@ -37,7 +36,7 @@ SHOW_PROMPTS = {
 }
 
 def get_latest_stream():
-    """Scrapes the newest stream directly from AM950's live streams tab."""
+    """Scrapes the newest stream from AM950's live streams tab."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
@@ -55,58 +54,26 @@ def get_latest_stream():
 
     return None, None
 
-def download_audio(video_url: str) -> str:
-    """Downloads audio in low-bitrate m4a/mp3 for fast transfer."""
-    output_filename = "stream_audio.m4a"
-    if os.path.exists(output_filename):
-        os.remove(output_filename)
-
-    ydl_opts = {
-        'format': 'ba[ext=m4a]/ba/b',
-        'outtmpl': 'stream_audio.%(ext)s',
-        'quiet': True,
-        'no_warnings': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'ios']
-            }
-        }
-    }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([video_url])
-
-    for ext in ['m4a', 'mp3', 'webm', 'opus']:
-        fname = f"stream_audio.{ext}"
-        if os.path.exists(fname):
-            return fname
-    raise FileNotFoundError("Audio download failed.")
-
 def identify_focus(title: str) -> str:
     for key in SHOW_PROMPTS:
         if re.search(key, title, re.IGNORECASE):
             return SHOW_PROMPTS[key]
     return "Focus on: Local news stories, community discussion, guest highlights, and potential broadcast flags."
 
-def generate_summary(audio_path: str, title: str) -> str:
+def generate_summary(video_url: str, title: str) -> str:
     client = genai.Client(api_key=GEMINI_API_KEY)
     focus_guidance = identify_focus(title)
 
-    print(f"Uploading audio ({audio_path}) to Gemini File API...")
-    audio_file = client.files.upload(file=audio_path)
-
-    # Allow brief moment if file is processing
-    while audio_file.state.name == "PROCESSING":
-        time.sleep(3)
-        audio_file = client.files.get(name=audio_file.name)
-
     prompt = f"""
     You are an executive assistant to the Station Manager at AM950 Radio.
-    Analyze the full audio from this radio broadcast for: "{title}".
+    Analyze the contents of this AM950 Radio broadcast from its published video archive:
+    Title: {title}
+    URL: {video_url}
     
     Show Focus:
     {focus_guidance}
     
-    Provide a concise, professional broadcast management summary:
+    Using your search tools, look up this broadcast and its transcript/content from AM950 Radio. Provide a concise, professional broadcast management summary:
     1. EXECUTIVE SUMMARY:
        - 2-3 sentences summarizing core topics, overall tone, and lead stories.
     2. KEY TOPICS & SEGMENTS:
@@ -119,18 +86,13 @@ def generate_summary(audio_path: str, title: str) -> str:
        - Note any potential broadcast flags (coarse language, personal attacks, or unverified claims) needing management review. If clean, write "None noted."
     """
 
-    print("Generating summary...")
     response = client.models.generate_content(
         model="gemini-2.5-flash",
-        contents=[audio_file, prompt]
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            tools=[types.Tool(google_search=types.GoogleSearch())]
+        )
     )
-
-    # Clean up uploaded cloud file
-    try:
-        client.files.delete(name=audio_file.name)
-    except Exception:
-        pass
-
     return response.text
 
 def send_email(subject: str, body: str, video_url: str):
@@ -167,16 +129,12 @@ def main():
 
     video_url = f"https://www.youtube.com/watch?v={video_id}"
     print(f"Processing stream: {title} ({video_url})")
-    
-    audio_file = download_audio(video_url)
-    try:
-        summary = generate_summary(audio_file, title)
-        send_email(f"[AM950 Summary] {title}", summary, video_url)
-        with open(PROCESSED_FILE, "a") as f:
-            f.write(f"{video_id}\n")
-    finally:
-        if os.path.exists(audio_file):
-            os.remove(audio_file)
+
+    summary = generate_summary(video_url, title)
+    send_email(f"[AM950 Summary] {title}", summary, video_url)
+
+    with open(PROCESSED_FILE, "a") as f:
+        f.write(f"{video_id}\n")
 
 if __name__ == "__main__":
     main()
