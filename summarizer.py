@@ -87,9 +87,14 @@ def get_recent_episodes():
                 print(f"Found {len(items)} items in feed.", flush=True)
 
                 for item in items:
-                    title = item.find("title").text if item.find("title") is not None else show_name
-                    link = item.find("link").text if item.find("link") is not None else ""
-                    desc = item.find("description").text if item.find("description") is not None else ""
+                    title_elem = item.find("title")
+                    title = title_elem.text if title_elem is not None else show_name
+                    
+                    link_elem = item.find("link")
+                    link = link_elem.text if link_elem is not None else ""
+                    
+                    desc_elem = item.find("description")
+                    desc = desc_elem.text if desc_elem is not None else ""
                     clean_desc = re.sub(r'<[^>]+>', '', desc).strip()
 
                     # Locate direct audio enclosure
@@ -105,7 +110,7 @@ def get_recent_episodes():
 
                     ep_id = link if link else title
 
-                    if mp3_url and ep_id not in seen_ids:
+                    if mp3_url and (ep_id not in seen_ids):
                         seen_ids.add(ep_id)
                         episodes.append({
                             "id": ep_id,
@@ -144,127 +149,4 @@ def download_audio(mp3_url):
                         f.write(chunk)
 
         if os.path.exists(AUDIO_PATH):
-            size_mb = os.path.getsize(AUDIO_PATH) / (1024 * 1024)
-            print(f"Audio downloaded: {size_mb:.2f} MB", flush=True)
-            return True
-    except Exception as e:
-        print(f"Audio download failed: {e}", flush=True)
-
-    return False
-
-def identify_focus(title):
-    for key in SHOW_PROMPTS:
-        if re.search(key, title, re.IGNORECASE):
-            return SHOW_PROMPTS[key]
-    return "Focus on: Detailed policy arguments, exact guest statements, caller discussions, and local news."
-
-def generate_summary(title, description, audio_available):
-    client = genai.Client(
-        api_key=GEMINI_API_KEY,
-        http_options=types.HttpOptions(timeout=180000.0)
-    )
-    focus_guidance = identify_focus(title)
-    today_str = datetime.datetime.now().strftime("%B %d, %Y")
-
-    prompt = f"""You are an executive assistant to the Station Manager at AM950 Radio (KTNF) in Minneapolis-St. Paul.
-Today's Date: {today_str}
-
-Analyze this AM950 broadcast:
-Show Title: {title}
-
-Show Directives:
-{focus_guidance}
-
-INSTRUCTIONS:
-Listen carefully to the broadcast audio attached. Produce a detailed executive memo summarizing ONLY what was actually spoken on air: the real topics, specific election results, candidate names, races, arguments, and commentary.
-Do NOT invent topics, do NOT fabricate callers, and do NOT extrapolate beyond what was actually said.
-
-Format the memorandum as follows:
-
-MEMORANDUM
-TO: Station Manager, AM950 KTNF
-FROM: Executive Assistant
-DATE: {today_str}
-BROADCAST: {title}
-
-1. EXECUTIVE SUMMARY:
-   - Provide 3-4 dense sentences detailing the actual lead news items, election results, guest arguments, and overall broadcast quality.
-
-2. COMPREHENSIVE SEGMENT BREAKDOWN:
-   - Chronological breakdown of each topic discussed.
-   - Detail the core argument, specific candidate/ballot races, local/state context, and notable claims cited.
-
-3. GUESTS, INTERVIEWS & CALLERS:
-   - Identify every named guest and direct bullet points summarizing their key arguments and direct quotes.
-   - Summarize notable listener call-ins if present: caller name/location, topic raised, and host's response. If no guests or callers, state: "Solo monologue by host; no guest appearances or caller segments."
-
-4. SPONSORS, UNDERWRITING & STATION PROMOTIONS:
-   - List every business, non-profit, union, or sponsor explicitly thanked or promoted.
-   - Note any station events or upcoming AM950 show promos mentioned.
-
-5. REGULATORY, COMPLIANCE & TONE FLAGS:
-   - Check for broadcast decency, FCC language concerns, unverified personal attacks, or contentious exchanges. If clean, state "Clean - No compliance flags noted."
-"""
-
-    uploaded_file = None
-    if audio_available and os.path.exists(AUDIO_PATH):
-        print("Uploading audio to Gemini File API...", flush=True)
-        uploaded_file = client.files.upload(file=AUDIO_PATH)
-        print("Audio uploaded. Processing summary...", flush=True)
-        contents = [uploaded_file, prompt]
-    else:
-        print("Audio missing. Using metadata only...", flush=True)
-        contents = [prompt + f"\n\nShow Description: {description}"]
-
-    gen_config = types.GenerateContentConfig(
-        temperature=0.2,
-        max_output_tokens=3000
-    )
-
-    candidate_models = ["gemini-3.8-flash", "gemini-3.5-flash-lite"]
-
-    for model_name in candidate_models:
-        for attempt in range(1, 3):
-            print(f"Requesting summary from {model_name} (attempt {attempt}/2)...", flush=True)
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=contents,
-                    config=gen_config
-                )
-                if response and response.text:
-                    print(f"Summary generated via {model_name}!", flush=True)
-                    if uploaded_file:
-                        try:
-                            client.files.delete(name=uploaded_file.name)
-                        except Exception:
-                            pass
-                    return response.text
-            except Exception as e:
-                print(f"{model_name} attempt {attempt} error: {e}", flush=True)
-                time.sleep(5)
-
-    raise RuntimeError("All candidate models failed to generate content.")
-
-def send_email(subject, body, web_link):
-    msg = MIMEMultipart()
-    msg['From'] = EMAIL_SENDER
-    msg['To'] = EMAIL_RECIPIENT
-    msg['Subject'] = subject
-
-    content = body + "\n\n---\nEpisode Link: " + web_link
-    msg.attach(MIMEText(content, 'plain'))
-
-    print("Connecting to Gmail SMTP via SSL on port 465...", flush=True)
-    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
-        server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-        server.send_message(msg)
-    print("Email sent successfully!", flush=True)
-
-def main():
-    if not os.path.exists(PROCESSED_FILE):
-        with open(PROCESSED_FILE, "w") as f:
-            f.write("")
-
-    with open(PROCESSED_FILE, "r") as f:
-        processed_ids = set(line.strip() for line in f.readlines() if
+            size_
