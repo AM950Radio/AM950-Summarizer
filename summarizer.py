@@ -6,7 +6,6 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import requests
 from google import genai
-from google.genai import types
 
 print("--- Script Starting ---", flush=True)
 
@@ -37,7 +36,7 @@ SHOW_PROMPTS = {
 }
 
 def get_latest_stream():
-    """Extracts the latest stream, falling back cleanly to the test stream if live scraping is shielded."""
+    """Extracts the latest stream, falling back to recent broadcast if live scraping is shielded."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9"
@@ -55,7 +54,7 @@ def get_latest_stream():
     except Exception as e:
         print("Stream detection note:", e, flush=True)
 
-    return "CPEGMSH1p8E", "Politics Matters with Bruce Klopfleisch", "Recent broadcast from AM950 Radio Minnesota."
+    return "CPEGMSH1p8E", "Episode 120 of Politics Matters with Bruce Klopfleisch", "Recent broadcast from AM950 Radio Minnesota."
 
 def fetch_video_details(video_id):
     title = ""
@@ -87,10 +86,7 @@ def identify_focus(title):
     return "Focus on: Local news stories, community discussion, and guest commentary."
 
 def generate_summary(video_url, title, description):
-    client = genai.Client(
-        api_key=GEMINI_API_KEY,
-        http_options=types.HttpOptions(timeout=90.0)
-    )
+    client = genai.Client(api_key=GEMINI_API_KEY)
     focus_guidance = identify_focus(title)
     today_str = datetime.datetime.now().strftime("%B %d, %Y")
 
@@ -124,7 +120,7 @@ BROADCAST: {title}
    - Any broadcast tone concerns or coarse language. If clean, state "None noted."
 """
 
-    candidate_models = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-1.5-flash"]
+    candidate_models = ["gemini-2.5-flash", "gemini-2.5-pro"]
     for model_name in candidate_models:
         try:
             print("Requesting summary from:", model_name, flush=True)
@@ -132,7 +128,7 @@ BROADCAST: {title}
                 model=model_name,
                 contents=prompt
             )
-            if response.text:
+            if response and response.text:
                 print("Summary generated successfully from:", model_name, flush=True)
                 return response.text
         except Exception as e:
