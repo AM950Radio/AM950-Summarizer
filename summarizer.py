@@ -73,26 +73,30 @@ def fetch_video_details(video_id):
     return title, desc
 
 def download_audio(video_url):
-    """Downloads lightweight audio stream using yt-dlp."""
+    """Downloads audio using yt-dlp with the android client emulator to bypass bot checks."""
     print("Downloading broadcast audio via yt-dlp...", flush=True)
     if os.path.exists(AUDIO_PATH):
         os.remove(AUDIO_PATH)
 
     cmd = [
         "yt-dlp",
-        "-f", "ba[ext=m4a]/ba/b",
+        "--extractor-args", "youtube:player_client=android,web",
+        "-f", "ba/b",
         "--extract-audio",
         "--audio-format", "mp3",
         "--audio-quality", "9",
+        "--no-check-certificates",
         "-o", AUDIO_PATH,
         video_url
     ]
     try:
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         if os.path.exists(AUDIO_PATH):
             size_mb = os.path.getsize(AUDIO_PATH) / (1024 * 1024)
             print(f"Audio downloaded: {size_mb:.2f} MB", flush=True)
             return True
+    except subprocess.CalledProcessError as e:
+        print("yt-dlp error output:", e.stderr[:300] if e.stderr else e, flush=True)
     except Exception as e:
         print("Audio download error:", e, flush=True)
 
@@ -107,7 +111,7 @@ def identify_focus(title):
 def generate_summary(video_url, title, description, audio_available):
     client = genai.Client(
         api_key=GEMINI_API_KEY,
-        http_options=types.HttpOptions(timeout=180000.0) # 3 min for audio upload/processing
+        http_options=types.HttpOptions(timeout=120000.0)
     )
     focus_guidance = identify_focus(title)
     today_str = datetime.datetime.now().strftime("%B %d, %Y")
@@ -122,7 +126,7 @@ URL: {video_url}
 Show Directives:
 {focus_guidance}
 
-Listen carefully to the broadcast audio attached. Produce a detailed executive memo summarizing the actual topics, guests, election results, callers, and statements made on air. Do not speculate or invent content.
+Listen carefully to the actual attached broadcast audio. Detail the true topics, races, election results, candidates, and arguments discussed on air. Do not extrapolate, hallucinate, or invent topics.
 
 Format the memorandum as follows:
 
@@ -133,11 +137,11 @@ DATE: {today_str}
 BROADCAST: {title}
 
 1. EXECUTIVE SUMMARY:
-   - Provide 3-4 dense sentences detailing the core election analysis or news items, host takeaways, and overall broadcast quality.
+   - Provide 3-4 dense sentences detailing the actual lead news items, election results, guest arguments, and overall broadcast quality.
 
 2. COMPREHENSIVE SEGMENT BREAKDOWN:
    - Chronological breakdown of each topic discussed with approximate timestamps.
-   - Detail the core argument, candidate/race specifics, local/state context, and notable claims cited.
+   - Detail the core argument, specific candidate/ballot races, local/state context, and notable claims cited.
 
 3. GUESTS, INTERVIEWS & CALLERS:
    - Identify every named guest and direct bullet points summarizing their key arguments.
@@ -157,10 +161,11 @@ BROADCAST: {title}
     if audio_available and os.path.exists(AUDIO_PATH):
         print("Uploading audio to Gemini File API...", flush=True)
         uploaded_file = client.files.upload(file=AUDIO_PATH)
-        print("Audio uploaded successfully. Processing summary...", flush=True)
+        print("Audio uploaded. Waiting for processing...", flush=True)
+        time.sleep(3)
         contents = [uploaded_file, prompt]
     else:
-        print("Falling back to text prompt with metadata...", flush=True)
+        print("Audio unavailable, falling back to show metadata...", flush=True)
         contents = [prompt + f"\n\nShow Description: {description}"]
 
     gen_config = types.GenerateContentConfig(
@@ -168,26 +173,31 @@ BROADCAST: {title}
         max_output_tokens=3500
     )
 
-    candidate_models = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]
+    candidate_models = ["gemini-3.8-flash", "gemini-3.5-flash-lite"]
 
     for model_name in candidate_models:
         for attempt in range(1, 3):
             print(f"Requesting summary from {model_name} (attempt {attempt}/2)...", flush=True)
             try:
-                response = client.models.generate_content(
+                response_stream = client.models.generate_content_stream(
                     model=model_name,
                     contents=contents,
                     config=gen_config
                 )
-                if response and response.text:
-                    print(f"Summary generated successfully via {model_name}!", flush=True)
-                    # Clean up uploaded audio on Gemini servers
+                chunks = []
+                for chunk in response_stream:
+                    if chunk.text:
+                        chunks.append(chunk.text)
+                
+                full_text = "".join(chunks)
+                if len(full_text.strip()) > 50:
+                    print(f"Summary successfully generated via {model_name}!", flush=True)
                     if uploaded_file:
                         try:
                             client.files.delete(name=uploaded_file.name)
                         except Exception:
                             pass
-                    return response.text
+                    return full_text
             except Exception as e:
                 print(f"{model_name} attempt {attempt} error: {e}", flush=True)
                 time.sleep(5)
