@@ -36,10 +36,10 @@ jobs:
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}
-          SMTP_SERVER: ${{ secrets.SMTP_SERVER || 'smtp.gmail.com' }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT || '587' }}
+          SMTP_SERVER: 'smtp.gmail.com'
+          SMTP_PORT: '465'
         run: |
-          python summarizer.py
+          python -u summarizer.py
 
       - name: Commit tracked video log
         run: |
