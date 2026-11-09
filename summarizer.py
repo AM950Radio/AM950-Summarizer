@@ -37,7 +37,6 @@ SHOW_PROMPTS = {
 }
 
 def get_latest_stream():
-    """Extracts the latest stream, falling back to recent broadcast if live scraping is shielded."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept-Language": "en-US,en;q=0.9"
@@ -87,9 +86,10 @@ def identify_focus(title):
     return "Focus on: Local news stories, community discussion, and guest commentary."
 
 def generate_summary(video_url, title, description):
+    # 120,000 milliseconds = 120 seconds (2 minutes)
     client = genai.Client(
         api_key=GEMINI_API_KEY,
-        http_options=types.HttpOptions(timeout=120.0)
+        http_options=types.HttpOptions(timeout=120000.0)
     )
     focus_guidance = identify_focus(title)
     today_str = datetime.datetime.now().strftime("%B %d, %Y")
@@ -124,21 +124,19 @@ BROADCAST: {title}
    - Any broadcast tone concerns or coarse language. If clean, state "None noted."
 """
 
-    candidate_models = ["gemini-3.8-flash", "gemini-3.1-pro-preview"]
-    for model_name in candidate_models:
-        try:
-            print("Requesting summary from:", model_name, flush=True)
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt
-            )
-            if response and response.text:
-                print("Summary generated successfully from:", model_name, flush=True)
-                return response.text
-        except Exception as e:
-            print(model_name, "error/warning:", e, flush=True)
+    print("Requesting summary from gemini-3.8-flash...", flush=True)
+    try:
+        response = client.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=prompt
+        )
+        if response and response.text:
+            print("Summary generated successfully!", flush=True)
+            return response.text
+    except Exception as e:
+        print("Gemini API error:", e, flush=True)
 
-    raise RuntimeError("All Gemini candidate models failed to generate content.")
+    raise RuntimeError("Gemini failed to generate content.")
 
 def send_email(subject, body, video_url):
     msg = MIMEMultipart()
