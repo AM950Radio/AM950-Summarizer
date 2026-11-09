@@ -82,21 +82,44 @@ def fetch_video_details(video_id):
     return title, desc
 
 def fetch_transcript(video_id):
-    """Pulls full spoken transcript from YouTube with approximate minute stamps."""
+    """Pulls broadcast transcript safely, handling both class and instance methods."""
+    print("Fetching broadcast transcript...", flush=True)
+    transcript_list = None
+
+    # Method 1: Direct fetch via class or instance
     try:
-        print("Fetching broadcast transcript...", flush=True)
-        transcript_list = YouTubeTranscriptApi.get_transcript(video_id)
+        if hasattr(YouTubeTranscriptApi, 'get_transcript'):
+            transcript_list = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
+        else:
+            api_instance = YouTubeTranscriptApi()
+            transcript_list = api_instance.get_transcript(video_id, languages=['en'])
+    except Exception:
+        pass
+
+    # Method 2: Transcripts listing fallback (handles auto-generated captions)
+    if not transcript_list:
+        try:
+            transcript_list_obj = YouTubeTranscriptApi.list_transcripts(video_id)
+            try:
+                transcript_obj = transcript_list_obj.find_transcript(['en'])
+            except Exception:
+                transcript_obj = transcript_list_obj.find_generated_transcript(['en'])
+            transcript_list = transcript_obj.fetch()
+        except Exception as e:
+            print("Transcript unavailable or not generated yet:", e, flush=True)
+            return None
+
+    if transcript_list:
         formatted_lines = []
         for entry in transcript_list:
             minutes = int(entry['start'] // 60)
             seconds = int(entry['start'] % 60)
             formatted_lines.append(f"[{minutes:02d}:{seconds:02d}] {entry['text']}")
         full_text = "\n".join(formatted_lines)
-        print(f"Transcript pulled: {len(full_text)} characters", flush=True)
+        print("Transcript pulled:", len(full_text), "characters", flush=True)
         return full_text
-    except Exception as e:
-        print(f"Transcript unavailable or not generated yet: {e}", flush=True)
-        return None
+
+    return None
 
 def identify_focus(title):
     for key in SHOW_PROMPTS:
@@ -107,15 +130,15 @@ def identify_focus(title):
 def generate_summary(video_url, title, description, transcript_text):
     client = genai.Client(
         api_key=GEMINI_API_KEY,
-        http_options=types.HttpOptions(timeout=60000.0)
+        http_options=types.HttpOptions(timeout=50000.0)
     )
     focus_guidance = identify_focus(title)
     today_str = datetime.datetime.now().strftime("%B %d, %Y")
 
     if transcript_text:
-        source_data = f"FULL BROADCAST TRANSCRIPT (with timestamps):\n{transcript_text[:50000]}"
+        source_data = "FULL BROADCAST TRANSCRIPT (with timestamps):\n" + transcript_text[:50000]
     else:
-        source_data = f"BROADCAST DESCRIPTION & METADATA:\n{description}"
+        source_data = "BROADCAST DESCRIPTION & METADATA:\n" + description
 
     prompt = f"""You are an executive assistant to the Station Manager at AM950 Radio (KTNF) in Minneapolis-St. Paul.
 Today's Date: {today_str}
@@ -163,23 +186,25 @@ BROADCAST: {title}
         max_output_tokens=3500
     )
 
-    for attempt in range(1, 4):
-        print(f"Requesting detailed summary from gemini-3.8-flash (attempt {attempt}/3)...", flush=True)
-        try:
-            response = client.models.generate_content(
-                model="gemini-3.8-flash",
-                contents=prompt,
-                config=gen_config
-            )
-            if response and response.text:
-                print("Detailed summary generated successfully!", flush=True)
-                return response.text
-        except Exception as e:
-            print(f"Attempt {attempt} failed with: {e}", flush=True)
-            if attempt < 3:
-                time.sleep(5)
+    candidate_models = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.5-pro"]
 
-    raise RuntimeError("Gemini failed after 3 attempts.")
+    for model_name in candidate_models:
+        for attempt in range(1, 3):
+            print(f"Requesting summary from {model_name} (attempt {attempt}/2)...", flush=True)
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=prompt,
+                    config=gen_config
+                )
+                if response and response.text:
+                    print(f"Summary successfully generated via {model_name}!", flush=True)
+                    return response.text
+            except Exception as e:
+                print(f"{model_name} error on attempt {attempt}: {e}", flush=True)
+                time.sleep(4)
+
+    raise RuntimeError("All candidate models failed to generate content.")
 
 def send_email(subject, body, video_url):
     msg = MIMEMultipart()
