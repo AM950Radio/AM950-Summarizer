@@ -6,6 +6,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import requests
 from google import genai
+from google.genai import types
 
 print("--- Script Starting ---", flush=True)
 
@@ -86,7 +87,10 @@ def identify_focus(title):
     return "Focus on: Local news stories, community discussion, and guest commentary."
 
 def generate_summary(video_url, title, description):
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    client = genai.Client(
+        api_key=GEMINI_API_KEY,
+        http_options=types.HttpOptions(timeout=120.0)
+    )
     focus_guidance = identify_focus(title)
     today_str = datetime.datetime.now().strftime("%B %d, %Y")
 
@@ -120,7 +124,7 @@ BROADCAST: {title}
    - Any broadcast tone concerns or coarse language. If clean, state "None noted."
 """
 
-    candidate_models = ["gemini-2.5-flash", "gemini-2.5-pro"]
+    candidate_models = ["gemini-3.8-flash", "gemini-3.1-pro-preview"]
     for model_name in candidate_models:
         try:
             print("Requesting summary from:", model_name, flush=True)
@@ -146,7 +150,7 @@ def send_email(subject, body, video_url):
     msg.attach(MIMEText(content, 'plain'))
 
     print("Connecting to Gmail SMTP via SSL on port 465...", flush=True)
-    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=25) as server:
+    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
         server.login(EMAIL_SENDER, EMAIL_PASSWORD)
         server.send_message(msg)
     print("Email sent successfully!", flush=True)
