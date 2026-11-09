@@ -12,9 +12,8 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 EMAIL_SENDER = os.environ.get("EMAIL_SENDER")
 EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD")
 EMAIL_RECIPIENT = os.environ.get("EMAIL_RECIPIENT")
-SMTP_SERVER = os.environ.get("SMTP_SERVER", "smtp.gmail.com")
-# Using direct SSL port 465 prevents cloud timeouts
-SMTP_PORT = int(os.environ.get("SMTP_PORT", 465))
+SMTP_SERVER = "smtp.gmail.com"
+SMTP_PORT = 465
 
 PROCESSED_FILE = "last_processed_video.txt"
 # =================================================
@@ -35,8 +34,7 @@ SHOW_PROMPTS = {
 }
 
 def get_latest_stream():
-    """Fetches the latest show metadata using YouTube oEmbed (100% reliable)."""
-    # Target broadcast
+    """Fetches the latest show metadata using YouTube oEmbed."""
     video_id = "CPEGMSH1p8E"
     video_url = f"https://www.youtube.com/watch?v={video_id}"
     
@@ -117,8 +115,7 @@ def send_email(subject: str, body: str, video_url: str):
     msg.attach(MIMEText(content, 'plain'))
 
     print(f"Connecting to {SMTP_SERVER}:{SMTP_PORT} via SSL...")
-    # SMTP_SSL on port 465 avoids the runner timeout
-    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=20) as server:
+    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=30) as server:
         server.login(EMAIL_SENDER, EMAIL_PASSWORD)
         server.send_message(msg)
     print("Email sent successfully!")
