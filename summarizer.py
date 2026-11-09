@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -35,26 +36,33 @@ SHOW_PROMPTS = {
 }
 
 def get_latest_stream():
-    """Scrapes the newest stream from AM950's streams tab and extracts its metadata."""
+    """Extracts stream video IDs directly from YouTube's embedded initial JSON payload."""
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
     }
-    resp = requests.get(STREAMS_URL, headers=headers, timeout=15)
-    resp.raise_for_status()
+    
+    # Try /streams first, fallback to main channel page
+    for url in [STREAMS_URL, "https://www.youtube.com/@AM950Radio"]:
+        try:
+            resp = requests.get(url, headers=headers, timeout=15)
+            if resp.status_code != 200:
+                continue
 
-    # Find candidate video IDs on the streams page
-    video_ids = re.findall(r'/watch\?v=([a-zA-Z0-9_-]{11})', resp.text)
-    if not video_ids:
-        video_ids = re.findall(r'\"videoId\":\"([a-zA-Z0-9_-]{11})\"', resp.text)
+            # 1. Grab all 11-character video IDs embedded anywhere in the data
+            vids = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"', resp.text)
+            
+            # De-duplicate while preserving order
+            seen = set()
+            clean_vids = [v for v in vids if not (v in seen or seen.add(v))]
 
-    # De-duplicate while preserving order
-    seen = set()
-    unique_ids = [v for v in video_ids if not (v in seen or seen.add(v))]
-
-    for vid_id in unique_ids:
-        title, desc = fetch_video_details(vid_id)
-        if title and len(title) > 5 and "keyboard shortcuts" not in title.lower():
-            return vid_id, title, desc
+            for vid_id in clean_vids:
+                title, desc = fetch_video_details(vid_id)
+                # Ignore invalid / player UI strings
+                if title and len(title) > 5 and not any(bad in title.lower() for bad in ["keyboard shortcuts", "youtube", "error"]):
+                    return vid_id, title, desc
+        except Exception as e:
+            print(f"Fetch error on {url}: {e}")
 
     return None, None, None
 
@@ -62,22 +70,25 @@ def fetch_video_details(video_id: str):
     """Fetches clean title and description from the video watch page."""
     try:
         url = f"https://www.youtube.com/watch?v={video_id}"
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9"
+        }
         res = requests.get(url, headers=headers, timeout=10)
         
-        # Extract title
-        title_match = re.search(r'<meta name=\"title\" content=\"(.*?)\">', res.text)
+        # Title extraction
+        title_match = re.search(r'<meta name="title" content="(.*?)">', res.text)
         if not title_match:
-            title_match = re.search(r'<title>(.*?) - YouTube</title>', res.text)
-        title = title_match.group(1) if title_match else ""
+            title_match = re.search(r'<title>(.*?)</title>', res.text)
+        title = title_match.group(1).replace(" - YouTube", "").strip() if title_match else ""
 
-        # Extract description
-        desc_match = re.search(r'<meta name=\"description\" content=\"(.*?)\">', res.text)
+        # Description extraction
+        desc_match = re.search(r'<meta name="description" content="(.*?)">', res.text)
         if not desc_match:
-            desc_match = re.search(r'\"shortDescription\":\"(.*?)\"', res.text)
-        desc = desc_match.group(1) if desc_match else "No description available."
+            desc_match = re.search(r'"shortDescription":"(.*?)"', res.text)
+        desc = desc_match.group(1).strip() if desc_match else "No description available."
 
-        return title.strip(), desc.strip()
+        return title, desc
     except Exception:
         return "", ""
 
