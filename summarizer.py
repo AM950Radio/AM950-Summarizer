@@ -1,19 +1,15 @@
 import os
 import re
 import smtplib
-import xml.etree.ElementTree as ET
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import requests
 from google import genai
-from google.genai import types
 
 # ================= Configuration =================
-# AM950 Official YouTube Channel RSS Feed
-RSS_URL = "https://www.youtube.com/feeds/videos.xml?channel_id=UC6P7_B57oV1L57K_x0ZkMtg"
-FALLBACK_CHANNEL_URL = "https://www.youtube.com/@AM950Radio/videos"
-
+CHANNEL_URL = "https://www.youtube.com/@AM950Radio/videos"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
 EMAIL_SENDER = os.environ.get("EMAIL_SENDER")
 EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD")
 EMAIL_RECIPIENT = os.environ.get("EMAIL_RECIPIENT")
@@ -39,22 +35,39 @@ SHOW_PROMPTS = {
 }
 
 def get_latest_stream():
-    """Fetches the latest public video directly from AM950's channel."""
+    """Scrapes the newest show from AM950's video feed."""
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
-    
-    # Primary: check public video list page
-    resp = requests.get(FALLBACK_CHANNEL_URL, headers=headers, timeout=15)
-    if resp.status_code == 200:
-        matches = re.findall(r'\"videoId\":\"([a-zA-Z0-9_-]{11})\".*?\"title\":\{\"runs\":\[\{\"text\":\"(.*?)\"\}\]', resp.text)
-        for vid_id, vid_title in matches:
-            if any(term in vid_title.lower() for term in ["gaily", "mcneil", "native roots", "am950", "politics", "show"]):
-                return vid_id, vid_title
-        if matches:
-            return matches[0][0], matches[0][1]
+    resp = requests.get(CHANNEL_URL, headers=headers, timeout=15)
+    resp.raise_for_status()
 
-    return None, None
+    # Match all (videoId, title) occurrences
+    matches = re.findall(r'\"videoId\":\"([a-zA-Z0-9_-]{11})\".*?\"title\":\{\"runs\":\[\{\"text\":\"(.*?)\"\}\]', resp.text)
+    
+    # Filter out YouTube player UI terms
+    ignored_titles = {"keyboard shortcuts", "play", "mute", "settings"}
+    for vid_id, vid_title in matches:
+        clean_title = vid_title.strip()
+        if clean_title.lower() not in ignored_titles and len(clean_title) > 5:
+            # Fetch video description via oEmbed/page meta
+            desc = fetch_video_description(vid_id)
+            return vid_id, clean_title, desc
+
+    return None, None, None
+
+def fetch_video_description(video_id: str) -> str:
+    """Fetches video metadata and description without hitting rate limits."""
+    try:
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        res = requests.get(url, headers=headers, timeout=10)
+        desc_match = re.search(r'\"shortDescription\":\"(.*?)\"', res.text)
+        if desc_match:
+            return desc_match.group(1).encode().decode('unicode_escape')
+    except Exception:
+        pass
+    return "No description available."
 
 def identify_focus(title: str) -> str:
     for key in SHOW_PROMPTS:
@@ -62,34 +75,39 @@ def identify_focus(title: str) -> str:
             return SHOW_PROMPTS[key]
     return "Focus on: Local news stories, community discussion, and guest commentary."
 
-def generate_summary(video_url: str, title: str) -> str:
+def generate_summary(video_url: str, title: str, description: str) -> str:
     client = genai.Client(api_key=GEMINI_API_KEY)
     focus_guidance = identify_focus(title)
 
     prompt = f"""
     You are an executive assistant to the Station Manager at AM950 Radio in Minnesota.
-    Provide a professional broadcast management summary for this radio episode:
+    Analyze this broadcast record and outline for the AM950 program:
     Show Title: {title}
     URL: {video_url}
+    
+    Episode Information & Overview:
+    {description}
     
     Guidance:
     {focus_guidance}
     
-    Using your search tools, look up this AM950 episode, topic breakdown, and discussion points.
-    Provide:
-    1. EXECUTIVE SUMMARY: 2-3 sentences on core topics and lead stories.
-    2. KEY TOPICS & SEGMENTS: Chronological bullet points of issues and policies discussed.
-    3. GUESTS & INTERVIEWS: Featured guests, titles, and key quotes or viewpoints.
-    4. STATION PROMOTIONS & SPONSORS: Sponsors or community announcements mentioned.
-    5. COMPLIANCE & TONE FLAGS: Any broadcast tone concerns or coarse language. If clean, state "None noted."
+    Provide a professional broadcast management summary:
+    1. EXECUTIVE SUMMARY:
+       - 2-3 sentences summarizing core topics, overall tone, and lead stories.
+    2. KEY TOPICS & SEGMENTS:
+       - Chronological bullet points of issues and policies discussed.
+    3. GUESTS & INTERVIEWS:
+       - Featured guests, titles, and key quotes or viewpoints.
+    4. STATION PROMOTIONS & SPONSORS:
+       - Sponsors or community announcements mentioned.
+    5. COMPLIANCE & TONE FLAGS:
+       - Any broadcast tone concerns or coarse language. If clean, state "None noted."
     """
 
+    # Pure text generation on Gemini 3.8 Flash (No tools = zero quota overhead on free tier)
     response = client.models.generate_content(
         model="gemini-3.8-flash",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            tools=[types.Tool(google_search=types.GoogleSearch())]
-        )
+        contents=prompt
     )
     return response.text
 
@@ -116,9 +134,9 @@ def main():
     with open(PROCESSED_FILE, "r") as f:
         processed_ids = set(line.strip() for line in f.readlines())
 
-    video_id, title = get_latest_stream()
+    video_id, title, desc = get_latest_stream()
     if not video_id:
-        print("No stream found.")
+        print("No valid show found on channel.")
         return
 
     if video_id in processed_ids:
@@ -128,7 +146,7 @@ def main():
     video_url = f"https://www.youtube.com/watch?v={video_id}"
     print(f"Processing show: {title} ({video_url})")
 
-    summary = generate_summary(video_url, title)
+    summary = generate_summary(video_url, title, desc)
     send_email(f"[AM950 Broadcast Summary] {title}", summary, video_url)
 
     with open(PROCESSED_FILE, "a") as f:
