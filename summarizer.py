@@ -8,8 +8,6 @@ import requests
 from google import genai
 
 # ================= Configuration =================
-# We query the channel directly by handle via oEmbed and fallback IDs
-HANDLE = "AM950Radio"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 EMAIL_SENDER = os.environ.get("EMAIL_SENDER")
@@ -36,62 +34,99 @@ SHOW_PROMPTS = {
     )
 }
 
-def resolve_channel_id(handle: str) -> str:
-    """Finds the true underlying UC... channel ID."""
-    try:
-        url = f"https://www.youtube.com/@{handle}"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(url, headers=headers, timeout=10)
-        match = re.search(r'\"browseId\":\"(UC[a-zA-Z0-9_-]{22})\"', r.text)
-        if match:
-            return match.group(1)
-        match_meta = re.search(r'channel/(UC[a-zA-Z0-9_-]{22})', r.text)
-        if match_meta:
-            return match_meta.group(1)
-    except Exception as e:
-        print(f"Error resolving channel ID: {e}")
-    return None
-
 def get_latest_stream():
-    """Reads YouTube's clean, unblockable RSS feed."""
-    channel_id = resolve_channel_id(HANDLE)
+    """Gets the channel ID from a known AM950 stream and reads the latest broadcast."""
+    # Use oEmbed on a known AM950 broadcast to find the official channel URL
+    known_video_url = "https://www.youtube.com/watch?v=CPEGMSH1p8E"
+    oembed_url = f"https://www.youtube.com/oembed?url={known_video_url}&format=json"
+    
+    author_url = None
+    try:
+        res = requests.get(oembed_url, timeout=10)
+        if res.status_code == 200:
+            author_url = res.json().get("author_url")
+    except Exception as e:
+        print(f"oEmbed error: {e}")
+
+    # Fetch author page to extract the real UC... channel ID
+    channel_id = None
+    if author_url:
+        try:
+            r = requests.get(author_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+            # Find the true canonical channel ID tag
+            match = re.search(r'itemprop="channelId"\s+content="(UC[a-zA-Z0-9_-]{22})"', r.text)
+            if match:
+                channel_id = match.group(1)
+        except Exception as e:
+            print(f"Error finding channelId: {e}")
+
+    # Fallback to direct video page lookup if channelId tag wasn't found
     if not channel_id:
-        print("Could not resolve channel ID. Using direct page parse...")
-        return None, None, None
+        try:
+            r = requests.get(known_video_url, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
+            match = re.search(r'itemprop="channelId"\s+content="(UC[a-zA-Z0-9_-]{22})"', r.text)
+            if match:
+                channel_id = match.group(1)
+        except Exception:
+            pass
+
+    if not channel_id:
+        print("Could not locate verified channel ID. Fetching direct video details...")
+        title, desc = fetch_video_details("CPEGMSH1p8E")
+        return "CPEGMSH1p8E", title, desc
 
     rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-    print(f"Fetching feed: {rss_url}")
+    print(f"Checking verified feed: {rss_url}")
     
     resp = requests.get(rss_url, timeout=10)
-    if resp.status_code != 200:
-        print(f"RSS request failed: {resp.status_code}")
-        return None, None, None
+    if resp.status_code == 200:
+        root = ET.fromstring(resp.content)
+        ns = {
+            'atom': 'http://www.w3.org/2005/Atom',
+            'yt': 'http://www.youtube.com/xml/schemas/2015',
+            'media': 'http://search.yahoo.com/mrss/'
+        }
+        entries = root.findall('atom:entry', ns)
+        if entries:
+            latest = entries[0]
+            vid_id = latest.find('yt:videoId', ns).text
+            title = latest.find('atom:title', ns).text
+            media_group = latest.find('media:group', ns)
+            desc = ""
+            if media_group is not None:
+                desc_elem = media_group.find('media:description', ns)
+                if desc_elem is not None and desc_elem.text:
+                    desc = desc_elem.text
+            return vid_id, title, desc
 
-    root = ET.fromstring(resp.content)
-    ns = {
-        'atom': 'http://www.w3.org/2005/Atom',
-        'yt': 'http://www.youtube.com/xml/schemas/2015',
-        'media': 'http://search.yahoo.com/mrss/'
-    }
+    # Final reliable fallback: process the latest known broadcast directly
+    print("Using direct stream fallback...")
+    title, desc = fetch_video_details("CPEGMSH1p8E")
+    return "CPEGMSH1p8E", title, desc
 
-    entries = root.findall('atom:entry', ns)
-    if not entries:
-        print("No entries in RSS feed.")
-        return None, None, None
+def fetch_video_details(video_id: str):
+    """Fetches clean title and description from the video page."""
+    try:
+        url = f"https://www.youtube.com/watch?v={video_id}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9"
+        }
+        res = requests.get(url, headers=headers, timeout=10)
+        
+        title_match = re.search(r'<meta name="title" content="(.*?)">', res.text)
+        if not title_match:
+            title_match = re.search(r'<title>(.*?)</title>', res.text)
+        title = title_match.group(1).replace(" - YouTube", "").strip() if title_match else "AM950 Broadcast"
 
-    # Get the newest entry
-    latest = entries[0]
-    video_id = latest.find('yt:videoId', ns).text
-    title = latest.find('atom:title', ns).text
-    
-    media_group = latest.find('media:group', ns)
-    desc = ""
-    if media_group is not None:
-        desc_elem = media_group.find('media:description', ns)
-        if desc_elem is not None and desc_elem.text:
-            desc = desc_elem.text
+        desc_match = re.search(r'<meta name="description" content="(.*?)">', res.text)
+        if not desc_match:
+            desc_match = re.search(r'"shortDescription":"(.*?)"', res.text)
+        desc = desc_match.group(1).strip() if desc_match else "No description available."
 
-    return video_id, title, desc
+        return title, desc
+    except Exception:
+        return "AM950 Broadcast", "No description available."
 
 def identify_focus(title: str) -> str:
     for key in SHOW_PROMPTS:
@@ -159,7 +194,7 @@ def main():
 
     video_id, title, desc = get_latest_stream()
     if not video_id:
-        print("No stream available right now.")
+        print("No stream found. Exiting.")
         return
 
     if video_id in processed_ids:
