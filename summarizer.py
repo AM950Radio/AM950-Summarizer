@@ -66,7 +66,6 @@ def get_recent_streams(limit=MAX_RECENT_VIDEOS):
         print("Stream scraping warning:", e, flush=True)
 
     if not videos:
-        # Fallback to test ID if scraping returns empty
         videos = ["CPEGMSH1p8E"]
 
     print(f"Discovered {len(videos)} recent stream candidate(s): {videos}", flush=True)
@@ -86,27 +85,46 @@ def fetch_video_details(video_id):
     return title
 
 def fetch_transcript(video_id):
-    """Retrieves full spoken transcript using YouTubeTranscriptApi."""
+    """Retrieves full transcript across both modern and legacy youtube-transcript-api versions."""
     print(f"Checking transcript for video {video_id}...", flush=True)
     raw_entries = None
 
+    # 1. Modern API pattern (v1.x+): YouTubeTranscriptApi().fetch(...)
     try:
-        if hasattr(YouTubeTranscriptApi, 'get_transcript'):
-            raw_entries = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
-        else:
-            api_instance = YouTubeTranscriptApi()
-            raw_entries = api_instance.get_transcript(video_id, languages=['en'])
-    except Exception:
+        api = YouTubeTranscriptApi()
+        if hasattr(api, 'fetch'):
+            raw_entries = api.fetch(video_id, languages=['en'])
+        elif hasattr(api, 'get_transcript'):
+            raw_entries = api.get_transcript(video_id, languages=['en'])
+    except Exception as e:
         pass
 
+    # 2. Modern listing pattern: YouTubeTranscriptApi().list(...)
     if not raw_entries:
         try:
-            transcript_list_obj = YouTubeTranscriptApi.list_transcripts(video_id)
-            try:
-                transcript_obj = transcript_list_obj.find_transcript(['en'])
-            except Exception:
-                transcript_obj = transcript_list_obj.find_generated_transcript(['en'])
-            raw_entries = transcript_obj.fetch()
+            api = YouTubeTranscriptApi()
+            if hasattr(api, 'list'):
+                t_list = api.list(video_id)
+                try:
+                    t_obj = t_list.find_transcript(['en'])
+                except Exception:
+                    t_obj = t_list.find_generated_transcript(['en'])
+                raw_entries = t_obj.fetch()
+        except Exception:
+            pass
+
+    # 3. Legacy classmethod patterns
+    if not raw_entries:
+        try:
+            if hasattr(YouTubeTranscriptApi, 'get_transcript'):
+                raw_entries = YouTubeTranscriptApi.get_transcript(video_id, languages=['en'])
+            elif hasattr(YouTubeTranscriptApi, 'list_transcripts'):
+                t_list = YouTubeTranscriptApi.list_transcripts(video_id)
+                try:
+                    t_obj = t_list.find_transcript(['en'])
+                except Exception:
+                    t_obj = t_list.find_generated_transcript(['en'])
+                raw_entries = t_obj.fetch()
         except Exception as e:
             print(f"Transcript unavailable for {video_id}: {e}", flush=True)
             return None
@@ -114,12 +132,23 @@ def fetch_transcript(video_id):
     if raw_entries:
         formatted = []
         for item in raw_entries:
-            start_sec = int(float(item.get('start', 0)))
+            # Handles both dict-like items and object attributes
+            start_sec = getattr(item, 'start', None)
+            if start_sec is None and isinstance(item, dict):
+                start_sec = item.get('start', 0)
+            start_sec = int(float(start_sec or 0))
+            
             minutes = start_sec // 60
             seconds = start_sec % 60
-            text = str(item.get('text', '')).strip()
-            if text:
-                formatted.append(f"[{minutes:02d}:{seconds:02d}] {text}")
+            
+            text_val = getattr(item, 'text', None)
+            if text_val is None and isinstance(item, dict):
+                text_val = item.get('text', '')
+            text_val = str(text_val or '').strip()
+            
+            if text_val:
+                formatted.append(f"[{minutes:02d}:{seconds:02d}] {text_val}")
+                
         full_text = "\n".join(formatted)
         print(f"Transcript loaded for {video_id} ({len(full_text)} characters)", flush=True)
         return full_text
@@ -175,7 +204,7 @@ BROADCAST: {title}
    - Summarize notable listener call-ins if present: caller name/location, topic raised, and host's response. If no guests or callers, state: "Solo monologue by host; no guest appearances or caller segments."
 
 4. SPONSORS, UNDERWRITING & STATION PROMOTIONS:
-   - List every business, non-profit, union, or sponsor explicitly thanked or promoted.
+   - List every business, non-profit, union, or community sponsor explicitly thanked or promoted.
    - Note any station events or upcoming AM950 show promos mentioned.
 
 5. REGULATORY, COMPLIANCE & TONE FLAGS:
