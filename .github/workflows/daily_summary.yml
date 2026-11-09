@@ -2,11 +2,11 @@ name: AM950 Daily Show Summarizer
 
 on:
   schedule:
-    # 3:35 PM CT (Mon-Fri) -> The Gaily Show wrap-up
+    # 3:35 PM CT (Mon-Fri) -> The Gaily Show wrap-up (21:35 UTC)
     - cron: '35 21 * * 1-5'
-    # 5:35 PM CT (Mon-Fri) -> The Matt McNeil Show wrap-up
+    # 5:35 PM CT (Mon-Fri) -> The Matt McNeil Show wrap-up (23:35 UTC)
     - cron: '35 23 * * 1-5'
-    # 6:35 PM CT (Mon-Fri) -> Native Roots Radio wrap-up
+    # 6:35 PM CT (Mon-Fri) -> Native Roots Radio wrap-up (00:35 UTC next day)
     - cron: '35 0 * * 2-6'
   workflow_dispatch:
 
@@ -32,7 +32,7 @@ jobs:
       - name: Install Python packages
         run: |
           python -m pip install --upgrade pip
-          pip install google-genai requests
+          pip install google-genai requests youtube-transcript-api
 
       - name: Run broadcast summary script
         env:
