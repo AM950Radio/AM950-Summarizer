@@ -6,8 +6,6 @@ import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import requests
-import youtube_transcript_api
-from youtube_transcript_api import YouTubeTranscriptApi
 from google import genai
 from google.genai import types
 
@@ -83,49 +81,59 @@ def fetch_video_details(video_id):
     return title, desc
 
 def fetch_transcript(video_id):
-    """Pulls broadcast transcript safely using all available library bindings."""
+    """Safely extracts transcript entries across varying youtube-transcript-api versions."""
     print("Fetching broadcast transcript...", flush=True)
     raw_entries = None
 
-    # Try static module function
+    # Approach 1: Try importing top-level or sub-module cleanly
     try:
-        raw_entries = youtube_transcript_api.YouTubeTranscriptApi.get_transcript(video_id)
-    except Exception:
-        pass
+        import youtube_transcript_api
+        api_target = getattr(youtube_transcript_api, "YouTubeTranscriptApi", None)
+        if api_target:
+            if hasattr(api_target, "get_transcript"):
+                raw_entries = api_target.get_transcript(video_id)
+            elif hasattr(api_target, "list_transcripts"):
+                tl = api_target.list_transcripts(video_id)
+                for t in tl:
+                    raw_entries = t.fetch()
+                    if raw_entries:
+                        break
+    except Exception as e:
+        print("Transcript API direct call error:", e, flush=True)
 
-    # Try instantiated fetcher
+    # Approach 2: If library fails, attempt timed caption extraction from watch page
     if not raw_entries:
         try:
-            api = YouTubeTranscriptApi()
-            if hasattr(api, 'get_transcript'):
-                raw_entries = api.get_transcript(video_id)
-        except Exception:
-            pass
-
-    # Try listing transcript tracks
-    if not raw_entries:
-        try:
-            track_list = youtube_transcript_api.YouTubeTranscriptApi.list_transcripts(video_id)
-            for track in track_list:
-                raw_entries = track.fetch()
-                if raw_entries:
-                    break
+            watch_url = f"https://www.youtube.com/watch?v={video_id}"
+            headers = {"User-Agent": "Mozilla/5.0"}
+            res = requests.get(watch_url, headers=headers, timeout=10)
+            captions_match = re.search(r'"captionTracks":\[\{"baseUrl":"(.*?)"', res.text)
+            if captions_match:
+                caption_url = captions_match.group(1).replace(r"\u0026", "&")
+                cap_res = requests.get(caption_url, timeout=10)
+                text_matches = re.findall(r'<text start="([\d\.]+)"[^>]*>(.*?)</text>', cap_res.text)
+                if text_matches:
+                    raw_entries = []
+                    for start_time, txt in text_matches:
+                        clean_txt = re.sub(r"&[a-z]+;", " ", txt).strip()
+                        raw_entries.append({"start": float(start_time), "text": clean_txt})
         except Exception as e:
-            print("Transcript unavailable:", e, flush=True)
+            print("Direct caption fallback note:", e, flush=True)
 
     if raw_entries:
         formatted = []
         for item in raw_entries:
-            start_sec = int(item.get('start', 0))
+            start_sec = int(float(item.get('start', 0)))
             minutes = start_sec // 60
             seconds = start_sec % 60
-            text = item.get('text', '').strip()
+            text = str(item.get('text', '')).strip()
             if text:
                 formatted.append(f"[{minutes:02d}:{seconds:02d}] {text}")
         full_text = "\n".join(formatted)
-        print("Transcript pulled:", len(full_text), "characters", flush=True)
+        print("Transcript pulled successfully:", len(full_text), "characters", flush=True)
         return full_text
 
+    print("Transcript unavailable; falling back to show metadata.", flush=True)
     return None
 
 def identify_focus(title):
@@ -137,13 +145,13 @@ def identify_focus(title):
 def generate_summary(video_url, title, description, transcript_text):
     client = genai.Client(
         api_key=GEMINI_API_KEY,
-        http_options=types.HttpOptions(timeout=60000.0)
+        http_options=types.HttpOptions(timeout=75000.0)
     )
     focus_guidance = identify_focus(title)
     today_str = datetime.datetime.now().strftime("%B %d, %Y")
 
     if transcript_text:
-        source_data = "FULL BROADCAST TRANSCRIPT (with timestamps):\n" + transcript_text[:40000]
+        source_data = "FULL BROADCAST TRANSCRIPT (with timestamps):\n" + transcript_text[:35000]
     else:
         source_data = "BROADCAST OVERVIEW & METADATA:\n" + description
 
@@ -159,7 +167,7 @@ Show Directives:
 
 {source_data}
 
-Write a comprehensive, granular executive station memorandum. Avoid vague generalizations; name specific individuals, exact policy/bill numbers, explicit arguments made by callers or hosts, and specific station sponsors.
+Write a comprehensive, granular executive station memorandum. Avoid vague generalizations; cite specific names, policy topics, caller arguments, and station announcements.
 
 Format the memorandum as follows:
 
@@ -174,15 +182,15 @@ BROADCAST: {title}
 
 2. COMPREHENSIVE SEGMENT BREAKDOWN:
    - Chronological breakdown of each topic discussed with approximate timestamps (e.g., [12:30]).
-   - For each topic, detail: the core conflict or argument, specific local/state context, and notable claims or statistics cited.
+   - Detail the core argument, specific local/state context, and notable claims or statistics cited.
 
 3. GUESTS, INTERVIEWS & CALLERS:
-   - Identify every named guest, their organization/title, and 2-3 direct bullet points summarizing their key arguments and direct quotes.
-   - Summarize notable listener call-ins: caller name/location, topic raised, and host's response.
+   - Identify every named guest, their organization/title, and direct bullet points summarizing their key arguments.
+   - Summarize notable listener call-ins if present: caller name/location, topic raised, and host's response.
 
 4. SPONSORS, UNDERWRITING & STATION PROMOTIONS:
-   - List every business, non-profit, union, or community sponsor explicitly mentioned or thanked during breaks.
-   - Note any station events, pledge drives, or upcoming AM950 show promos mentioned.
+   - List every business, non-profit, union, or community sponsor explicitly mentioned during breaks.
+   - Note any station events or upcoming AM950 show promos mentioned.
 
 5. REGULATORY, COMPLIANCE & TONE FLAGS:
    - Check for broadcast decency, FCC language concerns, unverified personal attacks, or contentious exchanges. If clean, state "Clean - No compliance flags noted."
@@ -193,12 +201,12 @@ BROADCAST: {title}
         max_output_tokens=3000
     )
 
-    # Active model roster
-    candidate_models = ["gemini-3.8-flash", "gemini-3.1-pro-preview"]
+    # Production models for API v1
+    candidate_models = ["gemini-3.8-flash", "gemini-3.8-pro"]
 
     for model_name in candidate_models:
-        for attempt in range(1, 3):
-            print(f"Requesting summary from {model_name} (attempt {attempt}/2)...", flush=True)
+        for attempt in range(1, 4):
+            print(f"Requesting summary from {model_name} (attempt {attempt}/3)...", flush=True)
             try:
                 response = client.models.generate_content(
                     model=model_name,
@@ -209,8 +217,11 @@ BROADCAST: {title}
                     print(f"Summary successfully generated via {model_name}!", flush=True)
                     return response.text
             except Exception as e:
-                print(f"{model_name} error on attempt {attempt}: {e}", flush=True)
-                time.sleep(3)
+                print(f"{model_name} attempt {attempt} error: {e}", flush=True)
+                # Exponential backoff on 503/504 traffic spikes
+                sleep_time = attempt * 5
+                print(f"Waiting {sleep_time}s before retrying...", flush=True)
+                time.sleep(sleep_time)
 
     raise RuntimeError("All candidate models failed to generate content.")
 
