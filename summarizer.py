@@ -1,14 +1,15 @@
 import os
 import re
-import json
 import smtplib
+import xml.etree.ElementTree as ET
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import requests
 from google import genai
 
 # ================= Configuration =================
-STREAMS_URL = "https://www.youtube.com/@AM950Radio/streams"
+# We query the channel directly by handle via oEmbed and fallback IDs
+HANDLE = "AM950Radio"
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 EMAIL_SENDER = os.environ.get("EMAIL_SENDER")
@@ -35,62 +36,62 @@ SHOW_PROMPTS = {
     )
 }
 
-def get_latest_stream():
-    """Extracts stream video IDs directly from YouTube's embedded initial JSON payload."""
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-    }
-    
-    # Try /streams first, fallback to main channel page
-    for url in [STREAMS_URL, "https://www.youtube.com/@AM950Radio"]:
-        try:
-            resp = requests.get(url, headers=headers, timeout=15)
-            if resp.status_code != 200:
-                continue
-
-            # 1. Grab all 11-character video IDs embedded anywhere in the data
-            vids = re.findall(r'"videoId":"([a-zA-Z0-9_-]{11})"', resp.text)
-            
-            # De-duplicate while preserving order
-            seen = set()
-            clean_vids = [v for v in vids if not (v in seen or seen.add(v))]
-
-            for vid_id in clean_vids:
-                title, desc = fetch_video_details(vid_id)
-                # Ignore invalid / player UI strings
-                if title and len(title) > 5 and not any(bad in title.lower() for bad in ["keyboard shortcuts", "youtube", "error"]):
-                    return vid_id, title, desc
-        except Exception as e:
-            print(f"Fetch error on {url}: {e}")
-
-    return None, None, None
-
-def fetch_video_details(video_id: str):
-    """Fetches clean title and description from the video watch page."""
+def resolve_channel_id(handle: str) -> str:
+    """Finds the true underlying UC... channel ID."""
     try:
-        url = f"https://www.youtube.com/watch?v={video_id}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9"
-        }
-        res = requests.get(url, headers=headers, timeout=10)
-        
-        # Title extraction
-        title_match = re.search(r'<meta name="title" content="(.*?)">', res.text)
-        if not title_match:
-            title_match = re.search(r'<title>(.*?)</title>', res.text)
-        title = title_match.group(1).replace(" - YouTube", "").strip() if title_match else ""
+        url = f"https://www.youtube.com/@{handle}"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, headers=headers, timeout=10)
+        match = re.search(r'\"browseId\":\"(UC[a-zA-Z0-9_-]{22})\"', r.text)
+        if match:
+            return match.group(1)
+        match_meta = re.search(r'channel/(UC[a-zA-Z0-9_-]{22})', r.text)
+        if match_meta:
+            return match_meta.group(1)
+    except Exception as e:
+        print(f"Error resolving channel ID: {e}")
+    return None
 
-        # Description extraction
-        desc_match = re.search(r'<meta name="description" content="(.*?)">', res.text)
-        if not desc_match:
-            desc_match = re.search(r'"shortDescription":"(.*?)"', res.text)
-        desc = desc_match.group(1).strip() if desc_match else "No description available."
+def get_latest_stream():
+    """Reads YouTube's clean, unblockable RSS feed."""
+    channel_id = resolve_channel_id(HANDLE)
+    if not channel_id:
+        print("Could not resolve channel ID. Using direct page parse...")
+        return None, None, None
 
-        return title, desc
-    except Exception:
-        return "", ""
+    rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+    print(f"Fetching feed: {rss_url}")
+    
+    resp = requests.get(rss_url, timeout=10)
+    if resp.status_code != 200:
+        print(f"RSS request failed: {resp.status_code}")
+        return None, None, None
+
+    root = ET.fromstring(resp.content)
+    ns = {
+        'atom': 'http://www.w3.org/2005/Atom',
+        'yt': 'http://www.youtube.com/xml/schemas/2015',
+        'media': 'http://search.yahoo.com/mrss/'
+    }
+
+    entries = root.findall('atom:entry', ns)
+    if not entries:
+        print("No entries in RSS feed.")
+        return None, None, None
+
+    # Get the newest entry
+    latest = entries[0]
+    video_id = latest.find('yt:videoId', ns).text
+    title = latest.find('atom:title', ns).text
+    
+    media_group = latest.find('media:group', ns)
+    desc = ""
+    if media_group is not None:
+        desc_elem = media_group.find('media:description', ns)
+        if desc_elem is not None and desc_elem.text:
+            desc = desc_elem.text
+
+    return video_id, title, desc
 
 def identify_focus(title: str) -> str:
     for key in SHOW_PROMPTS:
@@ -158,7 +159,7 @@ def main():
 
     video_id, title, desc = get_latest_stream()
     if not video_id:
-        print("No valid show found on channel.")
+        print("No stream available right now.")
         return
 
     if video_id in processed_ids:
