@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import time
 import datetime
 import smtplib
@@ -20,6 +21,7 @@ EMAIL_RECIPIENT = os.environ.get("EMAIL_RECIPIENT")
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 465
 PROCESSED_FILE = "last_processed_video.txt"
+HISTORY_FILE = "episode_history.json"
 AUDIO_PATH = "broadcast_episode.mp3"
 
 SHOW_FEEDS = {
@@ -42,6 +44,19 @@ SHOW_FEEDS = {
         "https://www.am950radio.com/category/podcasts/pm/feed/"
     ]
 }
+
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def save_history(history):
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(history, f, indent=2)
 
 def get_recent_episodes():
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -79,7 +94,12 @@ def get_recent_episodes():
                     ep_id = link if link else title
                     if mp3 and ep_id not in seen:
                         seen.add(ep_id)
-                        episodes.append({"id": ep_id, "title": title, "mp3": mp3})
+                        episodes.append({
+                            "id": ep_id,
+                            "show": show,
+                            "title": title,
+                            "mp3": mp3
+                        })
                         print(f"Found latest episode: {title}", flush=True)
                         found = True
                         break
@@ -112,45 +132,83 @@ def download_audio(url):
         print(f"Download failed: {e}", flush=True)
     return False
 
-def generate_summary(title):
+def generate_summary(show_name, title, past_episodes):
     client = genai.Client(api_key=GEMINI_API_KEY, http_options=types.HttpOptions(timeout=180000.0))
     today_str = datetime.datetime.now().strftime("%B %d, %Y")
 
-    prompt = f"""You are an executive assistant to the Station Manager at AM950 KTNF in Minneapolis-St. Paul.
+    history_context = ""
+    if past_episodes:
+        history_context = "RECENT PREVIOUS EPISODES AND TOPICS COVERED:\n"
+        for p in past_episodes[-6:]:
+            history_context += f"- Date: {p.get('date', 'Recent')}, Episode: {p.get('title', '')}\n  Topics: {p.get('topics', 'N/A')}\n"
+    else:
+        history_context = "No previous episode topic history recorded yet for this show."
+
+    prompt = f"""You are the Executive Station & Editorial Director at AM950 Radio (KTNF) in Minneapolis-St. Paul.
 Today's Date: {today_str}
-Broadcast: {title}
+Show Name: {show_name}
+Episode Title: {title}
 
-Analyze this attached audio broadcast. Base your memorandum STRICTLY on what was spoken on-air. Do NOT fabricate topics, callers, or races.
+{history_context}
 
-Format:
-MEMORANDUM
-TO: Station Manager, AM950 KTNF
-FROM: Executive Assistant
+INSTRUCTIONS:
+Listen carefully to the full broadcast audio attached. Produce an in-depth editorial, compliance, and promotional memorandum based STRICTLY on what was spoken on air. Do not extrapolate, hallucinate, or fabricate quotes or topics.
+
+Generate the report in this exact format:
+
+======================================================================
+EXECUTIVE BROADCAST MEMORANDUM & COMPLIANCE LOG
+SHOW: {show_name}
+EPISODE: {title}
 DATE: {today_str}
-BROADCAST: {title}
+======================================================================
 
-1. EXECUTIVE SUMMARY:
-   - 3-4 dense sentences detailing key topics, news items, and broadcast flow.
+1. PROMOTIONAL HOOK & "WHAT'S IN IT FOR ME" (WIIFM):
+   - Provide 2-3 compelling, punchy sentences suitable for web, newsletter, or social promotion. Frame the broadcast around listener value: why does listening matter to them, their wallet, their community, or their vote today?
 
-2. COMPREHENSIVE SEGMENT BREAKDOWN:
-   - Chronological summary of specific discussions, guests, policy arguments, and candidates cited.
+2. EXECUTIVE SUMMARY:
+   - 3-4 dense sentences detailing the lead news events, overall broadcast trajectory, and central editorial themes.
 
-3. GUESTS & CALLERS:
-   - Named guests with their specific arguments.
-   - Notable callers (name, location, topic). If none, state "Solo monologue; no callers."
+3. COMPREHENSIVE SEGMENT BREAKDOWN:
+   - Chronological breakdown of each topic discussed.
+   - Detail the core argument, specific candidate/ballot races, local/state policy implications, and notable claims cited.
 
-4. SPONSORS & UNDERWRITING:
-   - Businesses, unions, or organizations promoted.
+4. STORY CONTINUITY & REPEAT COVERAGE MONITOR:
+   - Compare today's broadcast against the RECENT PREVIOUS EPISODES list provided above.
+   - Note whether this story has been covered previously on this show, if it is a continuing development, a brand new breaking topic, or an interview with a repeating guest.
 
-5. REGULATORY & TONE FLAGS:
-   - FCC or language issues. If clean, state "Clean - No compliance flags noted."
+5. GUESTS, INTERVIEWS & CALLERS:
+   - List every named guest with key arguments, organization, and direct quotes.
+   - Summarize notable listener call-ins (name, location, topic raised, host response). If none, state: "Solo monologue; no caller segments."
+
+6. HEARTLAND SIGNAL MONITORING (HeartlandSignal.com):
+   - Explicitly note whether Heartland Signal, HeartlandSignal.com, or Heartland Signal staff/reporters were cited, interviewed, or credited.
+   - Detail the specific reporting, scoop, or byline referenced. If none, state: "None cited."
+
+7. PLAYED CLIPS & RECORDED ACTUALITY:
+   - List all recorded audio, debate clips, press conference audio, viral clips, or external news segments played on-air during the broadcast. Note whose voice was played and the context. If none, state: "No external clips played."
+
+8. RURAL MINNESOTAN TONE & SENSITIVITY MONITOR:
+   - Identify any disparaging, dismissive, or condescending language directed broadly at rural Minnesotans, Greater Minnesota communities, or rural voters. If fair policy critique or clean, state: "Clean - No derogatory language toward rural Minnesotans noted."
+
+9. CONSPIRACY THEORIES & UNSUPPORTED CLAIMS:
+   - Flag any unsubstantiated conspiracy theories, unevidenced allegations, or fringe claims made by hosts, guests, or callers. If none, state: "Clean - No unsubstantiated conspiracy theories detected."
+
+10. SPONSORS, UNDERWRITING & STATION PROMOTIONS:
+    - List every business, non-profit, union, or underwriter explicitly promoted or thanked.
+
+11. REGULATORY & FCC FLAGS:
+    - Language, broadcast decency, personal attacks, or FCC compliance concerns. If clean, state: "Clean - No compliance flags noted."
+
+12. KEY TOPICS INDEX:
+    - Provide a single comma-separated list of 3 to 6 major topics/names discussed in this broadcast (for archiving and historical tracking).
 """
 
     print("Uploading MP3 to Gemini...", flush=True)
     uploaded = client.files.upload(file=AUDIO_PATH)
-    print("Generating summary...", flush=True)
+    print("Generating comprehensive memo...", flush=True)
 
-    config = types.GenerateContentConfig(temperature=0.2, max_output_tokens=3000)
+    config = types.GenerateContentConfig(temperature=0.2, max_output_tokens=3500)
     for model in ["gemini-3.8-flash", "gemini-3.5-flash-lite"]:
         try:
             print(f"Calling {model}...", flush=True)
@@ -167,17 +225,29 @@ BROADCAST: {title}
 
     raise RuntimeError("All models failed to generate summary.")
 
-def send_email(title, body, link):
+def send_email(show_name, title, body, link):
     msg = MIMEMultipart()
     msg['From'] = EMAIL_SENDER
     msg['To'] = EMAIL_RECIPIENT
-    msg['Subject'] = f"[AM950 Broadcast Summary] {title}"
+
+    clean_sub = title.replace(show_name, "").strip(" -:|")
+    display_title = clean_sub if clean_sub else title
+    msg['Subject'] = f"[AM950] {show_name} | {display_title}"
+
     msg.attach(MIMEText(body + f"\n\n---\nEpisode Link: {link}", 'plain'))
+
+    recipients = [addr.strip() for addr in EMAIL_RECIPIENT.split(",") if addr.strip()]
 
     with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=30) as s:
         s.login(EMAIL_SENDER, EMAIL_PASSWORD)
-        s.send_message(msg)
-    print("Email sent successfully!", flush=True)
+        s.send_message(msg, to_addrs=recipients)
+    print(f"Email sent successfully to {len(recipients)} recipient(s)!", flush=True)
+
+def extract_topics(summary_text):
+    match = re.search(r"12\.\s*KEY TOPICS INDEX:\s*\n*(.*?)(?=\n\n|\Z)", summary_text, re.DOTALL)
+    if match:
+        return match.group(1).replace("-", "").strip()
+    return "General news and commentary"
 
 def main():
     if not os.path.exists(PROCESSED_FILE):
@@ -187,6 +257,7 @@ def main():
     with open(PROCESSED_FILE, "r") as f:
         done = set(line.strip() for line in f if line.strip())
 
+    history = load_history()
     candidates = get_recent_episodes()
     pending = [ep for ep in candidates if ep["id"] not in done]
 
@@ -195,15 +266,34 @@ def main():
         return
 
     print(f"Found {len(pending)} new episode(s) to process.", flush=True)
+    today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+
     for ep in pending:
-        print(f"\n--- Processing: {ep['title']} ---", flush=True)
+        show_name = ep["show"]
+        print(f"\n--- Processing: {show_name} - {ep['title']} ---", flush=True)
         if download_audio(ep["mp3"]):
             try:
-                summary = generate_summary(ep["title"])
-                send_email(ep["title"], summary, ep["id"])
+                past_episodes = history.get(show_name, [])
+                summary = generate_summary(show_name, ep["title"], past_episodes)
+                send_email(show_name, ep["title"], summary, ep["id"])
+
                 with open(PROCESSED_FILE, "a") as f:
                     f.write(ep["id"] + "\n")
                 print(f"Recorded ID: {ep['id']}", flush=True)
+
+                # Record topics to episode history
+                topics = extract_topics(summary)
+                if show_name not in history:
+                    history[show_name] = []
+                history[show_name].append({
+                    "date": today_str,
+                    "title": ep["title"],
+                    "topics": topics
+                })
+                # Keep rolling window of last 15 episodes per show
+                history[show_name] = history[show_name][-15:]
+                save_history(history)
+
             except Exception as e:
                 print(f"Processing error: {e}", flush=True)
             finally:
