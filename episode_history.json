@@ -4,6 +4,11 @@
       "date": "2026-11-11",
       "title": "The Matt McNeil Show \u2013 November 10, 2026",
       "topics": "General news and commentary"
+    },
+    {
+      "date": "2026-11-12",
+      "title": "The Matt McNeil Show \u2013 November 11, 2026",
+      "topics": "General news and commentary"
     }
   ],
   "The Gaily Show": [
@@ -16,6 +21,13 @@
       "date": "2026-11-12",
       "title": "Ken Schneck, Jake Wittich",
       "topics": "Ken Schneck, Jake Wittich, Ohio Midterm Elections, Illinois State Legislature, LGBTQ+ Electoral Representation, AntiTrans Advertising Backlash"
+    }
+  ],
+  "Native Roots Radio": [
+    {
+      "date": "2026-11-12",
+      "title": "Native Roots Radio \u2013 November 11, 2026",
+      "topics": "Veterans Day, Native American Military Service, Deb Haaland, Ada Deer, Indigenous Representation, Tribal Sovereignty"
     }
   ]
 }
