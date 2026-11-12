@@ -2,8 +2,8 @@ name: AM950 Daily Show Summarizer
 
 on:
   schedule:
-    # 6:00 AM Central Standard Time (12:00 UTC), Tuesday through Saturday
-    - cron: '0 12 * * 2-6'
+    # 7:15 PM Central Standard Time (01:15 UTC next day), catching Monday - Friday evening uploads
+    - cron: '15 1 * * 2-6'
   workflow_dispatch:
 
 permissions:
