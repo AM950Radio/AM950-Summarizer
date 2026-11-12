@@ -169,7 +169,7 @@ def generate_summary(show_name, title, past_episodes):
     else:
         history_context = "No previous episode topic history recorded yet for this show."
 
-    prompt = f"""You are the Executive Station & Editorial Director at AM950 Radio (KTNF) in Minneapolis-St. Paul, AND an SEO and social copy expert working for Heartland Signal (our sister digital-first state accountability journalism organization).
+    prompt = f"""You are the Executive Station & Editorial Director at AM950 Radio (KTNF) in Minneapolis-St. Paul, AND the Lead Digital Strategist / SEO Social Copy Expert for Heartland Signal.
 Today's Date: {today_str}
 Show Name: {show_name}
 Episode Title: {title}
@@ -177,13 +177,13 @@ Episode Title: {title}
 {history_context}
 
 INSTRUCTIONS:
-Listen carefully to the full broadcast audio attached. Produce an in-depth promotional, editorial, and compliance memorandum based STRICTLY on what was spoken on air. Never invent, extrapolate, or fabricate quotes or topics.
+Listen carefully to the full broadcast audio attached. Produce an in-depth promotional, YouTube packaging, editorial, and compliance memorandum based STRICTLY on what was spoken on air. Never invent, extrapolate, or fabricate quotes or topics.
 
 ----------------------------------------------------------------------
 SOCIAL EXCERPT & "WHAT'S IN IT FOR ME" STYLE RULES (FOR SECTION 1):
 - Core SEO Rule (Name & State First): Front-load the named official/guest and the specific state (e.g., Minnesota, Wisconsin, Michigan, Illinois, Iowa, Ohio, etc.) at or near the very front of the excerpt. Never use regional labels like "Midwest" when a specific state name does the SEO work.
 - Lead with Accountability Tension or Stakes: Hook listeners with what someone in power did, or who a decision affects ("Records reveal," "defended," "skipped," "100,000 lose"). Intrigue, don't give away the whole payoff.
-- Keep it Tight & Sentence Case: 2 to 4 short sentences per excerpt. Read it aloud; it must move. Use sentence case throughout — NO Title Case headlines.
+- Keep it Tight & Sentence Case: 2 to 4 short sentences per excerpt. Use sentence case throughout — NO Title Case headlines.
 - Register: Default to straight, plainspoken, attribution-forward news voice — factual, no jokes. Only switch to a sharper/voice-forward register if the broadcast segment is explicitly playful opinion/commentary (and flag when you do so).
 - Angles to Offer (Provide 3–4 labeled options per broadcast):
   * **Option 1 (accountability angle)** — lead with what an official or public figure did.
@@ -203,6 +203,21 @@ Example B:
 Nearly 100,000 Tennesseans have lost SNAP food aid since the One Big Beautiful Bill Act took effect last July. Cassandra Boyle is one of them. Her story shows what the enrollment data looks like up close.
 **Option 2 (straight-news angle)**
 State enrollment data shows about 100,000 Tennesseans have lost SNAP food benefits since the One Big Beautiful Bill Act took effect in July 2025.
+
+----------------------------------------------------------------------
+YOUTUBE HEADLINE GENERATOR RULES (FOR SECTION 2):
+- Audience & Tone: Direct, sharp, objective yet impactful, exposing political hypocrisy, highlighting labor/rights issues, and amplifying critical political quotes for progressive and Midwestern political observers.
+- Hard Limit: NEVER exceed 100 characters (including spaces).
+- Ideal Range: Target 50–70 characters for peak mobile and desktop visibility.
+- Front-Loading Rule: Put the politician's name, key organization, or major hook within the FIRST 40 CHARACTERS.
+- Specificity: Use direct quotes in quotation marks ("...") when a quote is the primary hook.
+- Limit Caps: Maximum 1 ALL-CAPS word per title for emphasis (e.g., EXPOSED, REJECTS, ADMITS).
+- Generate 8 to 10 title options organized under these 4 news-centric categories:
+  1. 📰 Breaking & Headline News (Clear, SEO-focused, name-first for search)
+  2. 🧲 Direct Quote / Exposé Hook (Uses candidate quotes or call-outs to drive CTR)
+  3. ⚡ Ultra-Punchy / Shorts Ready (< 45 characters, fast scan on mobile)
+  4. 🏛️ Policy & Community Impact (Focused on labor, rights, elections, or Midwest politics)
+- CRITICAL RULE: Always display the character count at the end of every title, e.g., "Title Text Here [52 chars]".
 ----------------------------------------------------------------------
 
 Generate the full memorandum in this exact format:
@@ -219,41 +234,44 @@ DATE: {today_str}
    - **Recommendation:** In 1–2 sentences, state which option(s) to lead with and why.
    - **Editorial Flags:** Flag any accuracy risks, sensitive framing, voice questions, or reasons an angle might not land.
 
-2. EXECUTIVE SUMMARY:
+2. YOUTUBE HEADLINES (HIGH-CTR & SHORTS PACKAGING):
+   - Provide 8–10 YouTube title options organized under the 4 required categories (📰 Breaking & Headline News, 🧲 Direct Quote / Exposé Hook, ⚡ Ultra-Punchy / Shorts Ready, 🏛️ Policy & Community Impact), strictly following the character limits, front-loading, quote, and ALL-CAPS rules, with [XX chars] at the end of every single title.
+
+3. EXECUTIVE SUMMARY:
    - 3-4 dense sentences detailing the lead news events, overall broadcast trajectory, and central editorial themes.
 
-3. COMPREHENSIVE SEGMENT BREAKDOWN:
+4. COMPREHENSIVE SEGMENT BREAKDOWN:
    - Chronological breakdown of each topic discussed.
    - Detail the core argument, specific candidate/ballot races, local/state policy implications, and notable claims cited.
 
-4. STORY CONTINUITY & REPEAT COVERAGE MONITOR:
+5. STORY CONTINUITY & REPEAT COVERAGE MONITOR:
    - Compare today's broadcast against the RECENT PREVIOUS EPISODES list provided above.
    - Note whether this story has been covered previously on this show, if it is a continuing development, a brand new breaking topic, or an interview with a repeating guest.
 
-5. GUESTS, INTERVIEWS & CALLERS:
+6. GUESTS, INTERVIEWS & CALLERS:
    - List every named guest with key arguments, organization, and direct quotes.
    - Summarize notable listener call-ins (name, location, topic raised, host response). If none, state: "Solo monologue; no caller segments."
 
-6. HEARTLAND SIGNAL MONITORING (HeartlandSignal.com):
+7. HEARTLAND SIGNAL MONITORING (HeartlandSignal.com):
    - Explicitly note whether Heartland Signal, HeartlandSignal.com, or Heartland Signal staff/reporters were cited, interviewed, or credited.
    - Detail the specific reporting, scoop, or byline referenced. If none, state: "None cited."
 
-7. PLAYED CLIPS & RECORDED ACTUALITY:
+8. PLAYED CLIPS & RECORDED ACTUALITY:
    - List all recorded audio, debate clips, press conference audio, viral clips, or external news segments played on-air during the broadcast. Note whose voice was played and the context. If none, state: "No external clips played."
 
-8. RURAL MINNESOTAN TONE & SENSITIVITY MONITOR:
+9. RURAL MINNESOTAN TONE & SENSITIVITY MONITOR:
    - Identify any disparaging, dismissive, or condescending language directed broadly at rural Minnesotans, Greater Minnesota communities, or rural voters. If fair policy critique or clean, state: "Clean - No derogatory language toward rural Minnesotans noted."
 
-9. CONSPIRACY THEORIES & UNSUPPORTED CLAIMS:
-   - Flag any unsubstantiated conspiracy theories, unevidenced allegations, or fringe claims made by hosts, guests, or callers. If none, state: "Clean - No unsubstantiated conspiracy theories detected."
+10. CONSPIRACY THEORIES & UNSUPPORTED CLAIMS:
+    - Flag any unsubstantiated conspiracy theories, unevidenced allegations, or fringe claims made by hosts, guests, or callers. If none, state: "Clean - No unsubstantiated conspiracy theories detected."
 
-10. SPONSORS, UNDERWRITING & STATION PROMOTIONS:
+11. SPONSORS, UNDERWRITING & STATION PROMOTIONS:
     - List every business, non-profit, union, or underwriter explicitly promoted or thanked.
 
-11. REGULATORY & FCC FLAGS:
+12. REGULATORY & FCC FLAGS:
     - Language, broadcast decency, personal attacks, or FCC compliance concerns. If clean, state: "Clean - No compliance flags noted."
 
-12. KEY TOPICS INDEX:
+13. KEY TOPICS INDEX:
     - Provide a single comma-separated list of 3 to 6 major topics/names discussed in this broadcast (for archiving and historical tracking).
 """
 
@@ -261,7 +279,7 @@ DATE: {today_str}
     uploaded = client.files.upload(file=AUDIO_PATH)
     print("Generating comprehensive memo...", flush=True)
 
-    config = types.GenerateContentConfig(temperature=0.2, max_output_tokens=4000)
+    config = types.GenerateContentConfig(temperature=0.2, max_output_tokens=5000)
     for model in ["gemini-3.8-flash", "gemini-3.5-flash-lite"]:
         for attempt in range(1, 4):
             try:
@@ -298,7 +316,7 @@ def send_email(show_name, title, body, link):
     print(f"Email sent successfully to {len(recipients)} recipient(s)!", flush=True)
 
 def extract_topics(summary_text):
-    match = re.search(r"12\.\s*KEY TOPICS INDEX:\s*\n*(.*?)(?=\n\n|\Z)", summary_text, re.DOTALL)
+    match = re.search(r"13\.\s*KEY TOPICS INDEX:\s*\n*(.*?)(?=\n\n|\Z)", summary_text, re.DOTALL)
     if match:
         return match.group(1).replace("-", "").strip()
     return "General news and commentary"
