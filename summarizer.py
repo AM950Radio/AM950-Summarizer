@@ -27,8 +27,8 @@ AUDIO_PATH = "broadcast_episode.mp3"
 SHOW_FEEDS = {
     "The Matt McNeil Show": [
         "https://www.am950radio.com/category/the-matt-mcneil-show/feed/",
-        "https://www.am950radio.com/category/matt-mcneil/feed/",
-        "https://www.am950radio.com/category/podcasts/mcneil/feed/"
+        "https://www.am950radio.com/category/podcasts/mcneil/feed/",
+        "https://www.am950radio.com/category/matt-mcneil/feed/"
     ],
     "Native Roots Radio": [
         "https://www.am950radio.com/category/podcasts/im-awake/feed/",
@@ -58,6 +58,17 @@ def save_history(history):
     with open(HISTORY_FILE, "w") as f:
         json.dump(history, f, indent=2)
 
+def extract_mp3_from_item(item):
+    enc = item.find("enclosure")
+    if enc is not None and "url" in enc.attrib:
+        return enc.attrib["url"]
+    # Search across all XML text/children (description, content:encoded, etc.)
+    raw_xml = ET.tostring(item, encoding="unicode")
+    m = re.search(r'https?://[^\s"\'<>]+\.mp3', raw_xml)
+    if m:
+        return m.group(0)
+    return None
+
 def get_recent_episodes():
     headers = {"User-Agent": "Mozilla/5.0"}
     episodes = []
@@ -67,46 +78,63 @@ def get_recent_episodes():
         found = False
         print(f"\nChecking feed for: {show}", flush=True)
         for url in urls:
-            try:
-                r = requests.get(url, headers=headers, timeout=10)
-                print(f"URL {url} -> Status {r.status_code}", flush=True)
-                if r.status_code != 200:
-                    continue
-                root = ET.fromstring(r.content)
-                items = root.findall(".//item")
-                for item in items:
-                    title_node = item.find("title")
-                    title = title_node.text if title_node is not None else show
-                    link_node = item.find("link")
-                    link = link_node.text if link_node is not None else ""
-                    desc_node = item.find("description")
-                    desc = desc_node.text if desc_node is not None else ""
-
-                    mp3 = None
-                    enc = item.find("enclosure")
-                    if enc is not None and "url" in enc.attrib:
-                        mp3 = enc.attrib["url"]
-                    if not mp3:
-                        m = re.search(r'https?://[^\s"]+\.mp3', desc)
-                        if m:
-                            mp3 = m.group(0)
-
-                    ep_id = link if link else title
-                    if mp3 and ep_id not in seen:
-                        seen.add(ep_id)
-                        episodes.append({
-                            "id": ep_id,
-                            "show": show,
-                            "title": title,
-                            "mp3": mp3
-                        })
-                        print(f"Found latest episode: {title}", flush=True)
-                        found = True
+            for net_try in range(2):
+                try:
+                    r = requests.get(url, headers=headers, timeout=15)
+                    print(f"URL {url} -> Status {r.status_code}", flush=True)
+                    if r.status_code != 200:
                         break
-                if found:
+                    root = ET.fromstring(r.content)
+                    items = root.findall(".//item")
+                    for item in items:
+                        title_node = item.find("title")
+                        title = title_node.text if title_node is not None else show
+                        link_node = item.find("link")
+                        link = link_node.text if link_node is not None else ""
+
+                        mp3 = extract_mp3_from_item(item)
+                        ep_id = link if link else title
+                        if mp3 and ep_id not in seen:
+                            seen.add(ep_id)
+                            episodes.append({
+                                "id": ep_id,
+                                "show": show,
+                                "title": title,
+                                "mp3": mp3
+                            })
+                            print(f"Found latest episode: {title}", flush=True)
+                            found = True
+                            break
                     break
+                except Exception as e:
+                    print(f"Feed attempt {net_try+1} error {url}: {e}", flush=True)
+                    time.sleep(3)
+            if found:
+                break
+
+        # Fallback: check master podcasts feed by show keyword
+        if not found:
+            keyword = "McNeil" if "McNeil" in show else show.split()[0]
+            try:
+                r = requests.get("https://www.am950radio.com/category/podcasts/feed/", headers=headers, timeout=15)
+                if r.status_code == 200:
+                    root = ET.fromstring(r.content)
+                    for item in root.findall(".//item"):
+                        title_node = item.find("title")
+                        title = title_node.text if title_node is not None else ""
+                        if re.search(keyword, title, re.IGNORECASE):
+                            mp3 = extract_mp3_from_item(item)
+                            link_node = item.find("link")
+                            link = link_node.text if link_node is not None else title
+                            if mp3 and link not in seen:
+                                seen.add(link)
+                                episodes.append({"id": link, "show": show, "title": title, "mp3": mp3})
+                                print(f"Found via master feed: {title}", flush=True)
+                                found = True
+                                break
             except Exception as e:
-                print(f"Feed error {url}: {e}", flush=True)
+                print(f"Master feed fallback error: {e}", flush=True)
+
         if not found:
             print(f"No active MP3 found for {show}", flush=True)
 
@@ -133,10 +161,9 @@ def download_audio(url):
     return False
 
 def generate_summary(show_name, title, past_episodes):
-    client = genai.Client(api_key=GEMINI_API_KEY, http_options=types.HttpOptions(timeout=180000.0))
+    client = genai.Client(api_key=GEMINI_API_KEY, http_options=types.HttpOptions(timeout=300000.0))
     today_str = datetime.datetime.now().strftime("%B %d, %Y")
 
-    history_context = ""
     if past_episodes:
         history_context = "RECENT PREVIOUS EPISODES AND TOPICS COVERED:\n"
         for p in past_episodes[-6:]:
@@ -144,7 +171,7 @@ def generate_summary(show_name, title, past_episodes):
     else:
         history_context = "No previous episode topic history recorded yet for this show."
 
-    prompt = f"""You are the Executive Station & Editorial Director at AM950 Radio (KTNF) in Minneapolis-St. Paul.
+    prompt = f"""You are the Executive Station & Editorial Director at AM950 Radio (KTNF) in Minneapolis-St. Paul, as well as an expert promotional copywriter.
 Today's Date: {today_str}
 Show Name: {show_name}
 Episode Title: {title}
@@ -210,18 +237,19 @@ DATE: {today_str}
 
     config = types.GenerateContentConfig(temperature=0.2, max_output_tokens=3500)
     for model in ["gemini-3.8-flash", "gemini-3.5-flash-lite"]:
-        try:
-            print(f"Calling {model}...", flush=True)
-            res = client.models.generate_content(model=model, contents=[uploaded, prompt], config=config)
-            if res and res.text:
-                try:
-                    client.files.delete(name=uploaded.name)
-                except Exception:
-                    pass
-                return res.text
-        except Exception as e:
-            print(f"{model} error: {e}", flush=True)
-            time.sleep(4)
+        for attempt in range(1, 4):
+            try:
+                print(f"Calling {model} (attempt {attempt}/3)...", flush=True)
+                res = client.models.generate_content(model=model, contents=[uploaded, prompt], config=config)
+                if res and res.text:
+                    try:
+                        client.files.delete(name=uploaded.name)
+                    except Exception:
+                        pass
+                    return res.text
+            except Exception as e:
+                print(f"{model} attempt {attempt} error: {e}", flush=True)
+                time.sleep(10 * attempt)
 
     raise RuntimeError("All models failed to generate summary.")
 
@@ -281,7 +309,6 @@ def main():
                     f.write(ep["id"] + "\n")
                 print(f"Recorded ID: {ep['id']}", flush=True)
 
-                # Record topics to episode history
                 topics = extract_topics(summary)
                 if show_name not in history:
                     history[show_name] = []
@@ -290,7 +317,6 @@ def main():
                     "title": ep["title"],
                     "topics": topics
                 })
-                # Keep rolling window of last 15 episodes per show
                 history[show_name] = history[show_name][-15:]
                 save_history(history)
 
