@@ -62,7 +62,6 @@ def extract_mp3_from_item(item):
     enc = item.find("enclosure")
     if enc is not None and "url" in enc.attrib:
         return enc.attrib["url"]
-    # Search across all XML text/children (description, content:encoded, etc.)
     raw_xml = ET.tostring(item, encoding="unicode")
     m = re.search(r'https?://[^\s"\'<>]+\.mp3', raw_xml)
     if m:
@@ -112,7 +111,6 @@ def get_recent_episodes():
             if found:
                 break
 
-        # Fallback: check master podcasts feed by show keyword
         if not found:
             keyword = "McNeil" if "McNeil" in show else show.split()[0]
             try:
@@ -171,7 +169,7 @@ def generate_summary(show_name, title, past_episodes):
     else:
         history_context = "No previous episode topic history recorded yet for this show."
 
-    prompt = f"""You are the Executive Station & Editorial Director at AM950 Radio (KTNF) in Minneapolis-St. Paul, as well as an expert promotional copywriter.
+    prompt = f"""You are the Executive Station & Editorial Director at AM950 Radio (KTNF) in Minneapolis-St. Paul, AND an SEO and social copy expert working for Heartland Signal (our sister digital-first state accountability journalism organization).
 Today's Date: {today_str}
 Show Name: {show_name}
 Episode Title: {title}
@@ -179,9 +177,35 @@ Episode Title: {title}
 {history_context}
 
 INSTRUCTIONS:
-Listen carefully to the full broadcast audio attached. Produce an in-depth editorial, compliance, and promotional memorandum based STRICTLY on what was spoken on air. Do not extrapolate, hallucinate, or fabricate quotes or topics.
+Listen carefully to the full broadcast audio attached. Produce an in-depth promotional, editorial, and compliance memorandum based STRICTLY on what was spoken on air. Never invent, extrapolate, or fabricate quotes or topics.
 
-Generate the report in this exact format:
+----------------------------------------------------------------------
+SOCIAL EXCERPT & "WHAT'S IN IT FOR ME" STYLE RULES (FOR SECTION 1):
+- Core SEO Rule (Name & State First): Front-load the named official/guest and the specific state (e.g., Minnesota, Wisconsin, Michigan, Illinois, Iowa, Ohio, etc.) at or near the very front of the excerpt. Never use regional labels like "Midwest" when a specific state name does the SEO work.
+- Lead with Accountability Tension or Stakes: Hook listeners with what someone in power did, or who a decision affects ("Records reveal," "defended," "skipped," "100,000 lose"). Intrigue, don't give away the whole payoff.
+- Keep it Tight & Sentence Case: 2 to 4 short sentences per excerpt. Read it aloud; it must move. Use sentence case throughout — NO Title Case headlines.
+- Register: Default to straight, plainspoken, attribution-forward news voice — factual, no jokes. Only switch to a sharper/voice-forward register if the broadcast segment is explicitly playful opinion/commentary (and flag when you do so).
+- Angles to Offer (Provide 3–4 labeled options per broadcast):
+  * **Option 1 (accountability angle)** — lead with what an official or public figure did.
+  * **Option 2 (stakes angle)** — lead with who's affected and how much ("what's in it for me").
+  * **Option 3 (straight-news angle)** — clean who/what/where, name and state up front, no spin.
+  * **Option 4 (curiosity angle)** — a question or tension the broadcast resolves (use ONLY when genuinely earned by the audio).
+
+PATTERN EXAMPLES FOR SECTION 1:
+Example A:
+**Option 1 (accountability angle)**
+Rep. Derrick Van Orden calls agriculture his "true love." Wisconsin committee records tell a different story. He skipped at least 10 of 22 House Agriculture hearings since 2024 — as farm bankruptcies surge across the state.
+**Option 2 (stakes angle)**
+Farm bankruptcies are surging in Wisconsin. The congressman who calls agriculture his top priority, Derrick Van Orden, missed at least 10 of 22 House Agriculture Committee hearings since 2024. The records are public.
+
+Example B:
+**Option 1 (stakes angle)**
+Nearly 100,000 Tennesseans have lost SNAP food aid since the One Big Beautiful Bill Act took effect last July. Cassandra Boyle is one of them. Her story shows what the enrollment data looks like up close.
+**Option 2 (straight-news angle)**
+State enrollment data shows about 100,000 Tennesseans have lost SNAP food benefits since the One Big Beautiful Bill Act took effect in July 2025.
+----------------------------------------------------------------------
+
+Generate the full memorandum in this exact format:
 
 ======================================================================
 EXECUTIVE BROADCAST MEMORANDUM & COMPLIANCE LOG
@@ -190,8 +214,10 @@ EPISODE: {title}
 DATE: {today_str}
 ======================================================================
 
-1. PROMOTIONAL HOOK & "WHAT'S IN IT FOR ME" (WIIFM):
-   - Provide 2-3 compelling, punchy sentences suitable for web, newsletter, or social promotion. Frame the broadcast around listener value: why does listening matter to them, their wallet, their community, or their vote today?
+1. SOCIAL EXCERPTS & PROMOTIONAL COPY ("WHAT'S IN IT FOR ME"):
+   - Write 3–4 excerpt options (using the Accountability, Stakes, Straight-News, and Curiosity angles above), front-loading named officials/guests and specific states, written in crisp sentence-case prose designed to intrigue people to listen.
+   - **Recommendation:** In 1–2 sentences, state which option(s) to lead with and why.
+   - **Editorial Flags:** Flag any accuracy risks, sensitive framing, voice questions, or reasons an angle might not land.
 
 2. EXECUTIVE SUMMARY:
    - 3-4 dense sentences detailing the lead news events, overall broadcast trajectory, and central editorial themes.
@@ -235,7 +261,7 @@ DATE: {today_str}
     uploaded = client.files.upload(file=AUDIO_PATH)
     print("Generating comprehensive memo...", flush=True)
 
-    config = types.GenerateContentConfig(temperature=0.2, max_output_tokens=3500)
+    config = types.GenerateContentConfig(temperature=0.2, max_output_tokens=4000)
     for model in ["gemini-3.8-flash", "gemini-3.5-flash-lite"]:
         for attempt in range(1, 4):
             try:
