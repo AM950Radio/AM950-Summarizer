@@ -371,10 +371,11 @@ DATE: {today_str}
         temperature=0.1,
         max_output_tokens=5000
     )
-    for model in ["gemini-3.8-flash", "gemini-3.5-flash-lite"]:
-        for attempt in range(1, 4):
+    models = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-2.5-pro"]
+    for model in models:
+        for attempt in range(1, 3):
             try:
-                print(f"Calling {model} (attempt {attempt}/3)...", flush=True)
+                print(f"Calling {model} (attempt {attempt}/2)...", flush=True)
                 res = client.models.generate_content(model=model, contents=[uploaded, prompt], config=config)
                 if res and res.text:
                     try:
@@ -384,7 +385,7 @@ DATE: {today_str}
                     return res.text
             except Exception as e:
                 print(f"{model} attempt {attempt} error: {e}", flush=True)
-                time.sleep(10 * attempt)
+                time.sleep(15 * attempt)
 
     raise RuntimeError("All models failed to generate summary.")
 
