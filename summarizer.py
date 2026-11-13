@@ -81,7 +81,6 @@ def extract_show_notes(item):
 def extract_mp3_from_text(text):
     if not text:
         return None
-    # Match direct .mp3 or Blubrry/SoundCloud stream URLs
     patterns = [
         r'https?://[^\s"\'<>]+\.mp3(?:\?[^\s"\'<>]*)?',
         r'https?://media\.blubrry\.com/[^\s"\'<>]+',
@@ -103,7 +102,6 @@ def extract_mp3_from_item(item, link=""):
     if mp3:
         return mp3
 
-    # Fallback: fetch the episode webpage itself if XML lacks an enclosure
     if link and link.startswith("http"):
         try:
             r = requests.get(link, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
@@ -125,6 +123,9 @@ def item_matches_show(item, keyword):
     for cat in item.findall("category"):
         if cat.text and re.search(keyword, cat.text, re.IGNORECASE):
             return True
+    desc = extract_show_notes(item)
+    if re.search(keyword, desc, re.IGNORECASE):
+        return True
     return False
 
 def get_recent_episodes():
@@ -144,6 +145,7 @@ def get_recent_episodes():
                         break
                     root = ET.fromstring(r.content)
                     items = root.findall(".//item")
+                    print(f"  Items in feed: {len(items)}", flush=True)
                     for item in items:
                         title_node = item.find("title")
                         title = title_node.text.strip() if (title_node is not None and title_node.text) else show
@@ -172,7 +174,6 @@ def get_recent_episodes():
             if found:
                 break
 
-        # Fallback: check master podcasts feed by title OR WordPress <category> tag
         if not found:
             keyword = "McNeil" if "McNeil" in show else show.split()[0]
             try:
@@ -251,11 +252,11 @@ OFFICIAL PODCAST EPISODE NOTES (GROUND TRUTH METADATA):
 
 {history_context}
 
-CRITICAL ACCURACY & ANTI-HALLUCINATION RULES:
-1. Listen to the ENTIRE attached audio file from start to finish — including the opening segment right after the intro music/station ID.
-2. Cross-reference the audio with the OFFICIAL PODCAST EPISODE NOTES above. Every named guest, legislator, or topic listed in the Episode Notes MUST be accurately covered in your summary with specific details and quotes from their interview on the audio.
-3. NEVER write generic filler descriptions (such as "Host opens the show discussing local news and welcoming listeners"). State the exact first topic, guest, or interview immediately.
-4. Never invent, extrapolate, or fabricate quotes or topics not present in the audio or official notes.
+CRITICAL TIMESTAMP & ANTI-HALLUCINATION RULES:
+1. Listen to the ENTIRE attached audio file starting from 00:00 — pay close attention to the exact second/minute when the intro music ends and the first topic or guest interview begins (often around 00:30 to 02:00).
+2. NEVER round timestamps to arbitrary 5-minute blocks (such as "00:00 – 05:00") and NEVER invent generic filler summaries (such as "Host opens the show welcoming listeners and setting the stage for discussions"). State the exact [MM:SS] timestamp when each segment or guest actually starts speaking.
+3. Cross-reference the audio with the OFFICIAL PODCAST EPISODE NOTES above. Every named guest, legislator, or topic listed in the Episode Notes MUST be accurately covered with their exact start timestamp and direct quotes from the audio.
+4. Never invent, extrapolate, or fabricate quotes, timestamps, or topics.
 
 ----------------------------------------------------------------------
 SOCIAL EXCERPT & "WHAT'S IN IT FOR ME" STYLE RULES (FOR SECTION 1):
@@ -318,8 +319,9 @@ DATE: {today_str}
 3. EXECUTIVE SUMMARY:
    - 3-4 dense sentences detailing the lead news events, named guests/interviews, overall broadcast trajectory, and central editorial themes.
 
-4. COMPREHENSIVE SEGMENT BREAKDOWN:
-   - Chronological breakdown of each topic discussed with timestamps.
+4. COMPREHENSIVE SEGMENT BREAKDOWN (EXACT MM:SS TIMESTAMPS):
+   - Chronological breakdown starting from 00:00 with exact [MM:SS] start/end times (do NOT round to 5-minute blocks).
+   - Explicitly note when the theme music/intro ends and when the first guest or topic begins.
    - Detail the core argument, specific candidate/ballot races, local/state policy implications, and notable claims cited.
 
 5. STORY CONTINUITY & REPEAT COVERAGE MONITOR:
@@ -327,7 +329,7 @@ DATE: {today_str}
    - Note whether this story has been covered previously on this show, if it is a continuing development, a brand new breaking topic, or an interview with a repeating guest.
 
 6. GUESTS, INTERVIEWS & CALLERS:
-   - List every named guest (including anyone listed in the Episode Notes) with key arguments, title/organization, and direct quotes from the broadcast.
+   - List every named guest (including anyone listed in the Episode Notes) with their exact [MM:SS] appearance timestamp, key arguments, title/organization, and direct quotes from the broadcast.
    - Summarize notable listener call-ins (name, location, topic raised, host response). If none, state: "Solo monologue; no caller segments."
 
 7. HEARTLAND SIGNAL MONITORING (HeartlandSignal.com):
@@ -335,7 +337,7 @@ DATE: {today_str}
    - Detail the specific reporting, scoop, or byline referenced. If none, state: "None cited."
 
 8. PLAYED CLIPS & RECORDED ACTUALITY:
-   - List all recorded audio, debate clips, press conference audio, viral clips, or external news segments played on-air during the broadcast. Note whose voice was played and the context. If none, state: "No external clips played."
+   - List all recorded audio, debate clips, press conference audio, viral clips, or external news segments played on-air during the broadcast with exact [MM:SS] timestamps. Note whose voice was played and the context. If none, state: "No external clips played."
 
 9. RURAL MINNESOTAN TONE & SENSITIVITY MONITOR:
    - Identify any disparaging, dismissive, or condescending language directed broadly at rural Minnesotans, Greater Minnesota communities, or rural voters. If fair policy critique or clean, state: "Clean - No derogatory language toward rural Minnesotans noted."
@@ -356,7 +358,6 @@ DATE: {today_str}
     print("Uploading MP3 to Gemini...", flush=True)
     uploaded = client.files.upload(file=AUDIO_PATH)
 
-    # Wait briefly if Gemini is still indexing the uploaded audio file
     for _ in range(10):
         file_info = client.files.get(name=uploaded.name)
         state = getattr(file_info.state, "name", str(file_info.state))
@@ -367,7 +368,11 @@ DATE: {today_str}
 
     print("Generating comprehensive memo...", flush=True)
 
-    config = types.GenerateContentConfig(temperature=0.15, max_output_tokens=5000)
+    config = types.GenerateContentConfig(
+        temperature=0.1,
+        max_output_tokens=5000,
+        audio_timestamp=True
+    )
     for model in ["gemini-3.8-flash", "gemini-3.5-flash-lite"]:
         for attempt in range(1, 4):
             try:
