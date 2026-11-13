@@ -26,9 +26,11 @@ AUDIO_PATH = "broadcast_episode.mp3"
 
 SHOW_FEEDS = {
     "The Matt McNeil Show": [
+        "https://www.am950radio.com/category/podcasts/matt-mcneil/feed/",
         "https://www.am950radio.com/category/the-matt-mcneil-show/feed/",
         "https://www.am950radio.com/category/podcasts/mcneil/feed/",
-        "https://www.am950radio.com/category/matt-mcneil/feed/"
+        "https://www.am950radio.com/category/matt-mcneil/feed/",
+        "https://www.am950radio.com/category/mcneil/feed/"
     ],
     "Native Roots Radio": [
         "https://www.am950radio.com/category/podcasts/im-awake/feed/",
@@ -58,15 +60,72 @@ def save_history(history):
     with open(HISTORY_FILE, "w") as f:
         json.dump(history, f, indent=2)
 
-def extract_mp3_from_item(item):
+def clean_html(raw_html):
+    if not raw_html:
+        return ""
+    text = re.sub(r'<[^>]+>', ' ', raw_html)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
+def extract_show_notes(item):
+    parts = []
+    for child in item:
+        tag = child.tag.lower()
+        if tag.endswith("description") or tag.endswith("encoded") or tag.endswith("summary"):
+            if child.text:
+                cleaned = clean_html(child.text)
+                if cleaned and cleaned not in parts:
+                    parts.append(cleaned)
+    return "\n".join(parts).strip()
+
+def extract_mp3_from_text(text):
+    if not text:
+        return None
+    # Match direct .mp3 or Blubrry/SoundCloud stream URLs
+    patterns = [
+        r'https?://[^\s"\'<>]+\.mp3(?:\?[^\s"\'<>]*)?',
+        r'https?://media\.blubrry\.com/[^\s"\'<>]+',
+        r'https?://feeds\.soundcloud\.com/stream/[^\s"\'<>]+'
+    ]
+    for pat in patterns:
+        m = re.search(pat, text)
+        if m:
+            return m.group(0)
+    return None
+
+def extract_mp3_from_item(item, link=""):
     enc = item.find("enclosure")
     if enc is not None and "url" in enc.attrib:
         return enc.attrib["url"]
+
     raw_xml = ET.tostring(item, encoding="unicode")
-    m = re.search(r'https?://[^\s"\'<>]+\.mp3', raw_xml)
-    if m:
-        return m.group(0)
+    mp3 = extract_mp3_from_text(raw_xml)
+    if mp3:
+        return mp3
+
+    # Fallback: fetch the episode webpage itself if XML lacks an enclosure
+    if link and link.startswith("http"):
+        try:
+            r = requests.get(link, headers={"User-Agent": "Mozilla/5.0"}, timeout=15)
+            if r.status_code == 200:
+                mp3 = extract_mp3_from_text(r.text)
+                if mp3:
+                    print(f"Extracted audio URL from episode page: {mp3}", flush=True)
+                    return mp3
+        except Exception as e:
+            print(f"Page scrape fallback error for {link}: {e}", flush=True)
+
     return None
+
+def item_matches_show(item, keyword):
+    title_node = item.find("title")
+    title = title_node.text if (title_node is not None and title_node.text) else ""
+    if re.search(keyword, title, re.IGNORECASE):
+        return True
+    for cat in item.findall("category"):
+        if cat.text and re.search(keyword, cat.text, re.IGNORECASE):
+            return True
+    return False
 
 def get_recent_episodes():
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -87,19 +146,21 @@ def get_recent_episodes():
                     items = root.findall(".//item")
                     for item in items:
                         title_node = item.find("title")
-                        title = title_node.text if title_node is not None else show
+                        title = title_node.text.strip() if (title_node is not None and title_node.text) else show
                         link_node = item.find("link")
-                        link = link_node.text if link_node is not None else ""
+                        link = link_node.text.strip() if (link_node is not None and link_node.text) else ""
 
-                        mp3 = extract_mp3_from_item(item)
+                        mp3 = extract_mp3_from_item(item, link)
                         ep_id = link if link else title
                         if mp3 and ep_id not in seen:
                             seen.add(ep_id)
+                            notes = extract_show_notes(item)
                             episodes.append({
                                 "id": ep_id,
                                 "show": show,
                                 "title": title,
-                                "mp3": mp3
+                                "mp3": mp3,
+                                "notes": notes
                             })
                             print(f"Found latest episode: {title}", flush=True)
                             found = True
@@ -111,22 +172,31 @@ def get_recent_episodes():
             if found:
                 break
 
+        # Fallback: check master podcasts feed by title OR WordPress <category> tag
         if not found:
             keyword = "McNeil" if "McNeil" in show else show.split()[0]
             try:
                 r = requests.get("https://www.am950radio.com/category/podcasts/feed/", headers=headers, timeout=15)
+                print(f"Master feed fallback for {show} (keyword: {keyword}) -> Status {r.status_code}", flush=True)
                 if r.status_code == 200:
                     root = ET.fromstring(r.content)
                     for item in root.findall(".//item"):
-                        title_node = item.find("title")
-                        title = title_node.text if title_node is not None else ""
-                        if re.search(keyword, title, re.IGNORECASE):
-                            mp3 = extract_mp3_from_item(item)
+                        if item_matches_show(item, keyword):
+                            title_node = item.find("title")
+                            title = title_node.text.strip() if (title_node is not None and title_node.text) else show
                             link_node = item.find("link")
-                            link = link_node.text if link_node is not None else title
+                            link = link_node.text.strip() if (link_node is not None and link_node.text) else title
+                            mp3 = extract_mp3_from_item(item, link)
                             if mp3 and link not in seen:
                                 seen.add(link)
-                                episodes.append({"id": link, "show": show, "title": title, "mp3": mp3})
+                                notes = extract_show_notes(item)
+                                episodes.append({
+                                    "id": link,
+                                    "show": show,
+                                    "title": title,
+                                    "mp3": mp3,
+                                    "notes": notes
+                                })
                                 print(f"Found via master feed: {title}", flush=True)
                                 found = True
                                 break
@@ -144,7 +214,7 @@ def download_audio(url):
     if os.path.exists(AUDIO_PATH):
         os.remove(AUDIO_PATH)
     try:
-        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, stream=True, timeout=90)
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, stream=True, timeout=120)
         r.raise_for_status()
         with open(AUDIO_PATH, "wb") as f:
             for chunk in r.iter_content(chunk_size=1048576):
@@ -158,7 +228,7 @@ def download_audio(url):
         print(f"Download failed: {e}", flush=True)
     return False
 
-def generate_summary(show_name, title, past_episodes):
+def generate_summary(show_name, title, notes, past_episodes):
     client = genai.Client(api_key=GEMINI_API_KEY, http_options=types.HttpOptions(timeout=300000.0))
     today_str = datetime.datetime.now().strftime("%B %d, %Y")
 
@@ -169,15 +239,23 @@ def generate_summary(show_name, title, past_episodes):
     else:
         history_context = "No previous episode topic history recorded yet for this show."
 
+    notes_block = notes if notes else "No text show notes provided in RSS feed; rely strictly on the spoken audio."
+
     prompt = f"""You are the Executive Station & Editorial Director at AM950 Radio (KTNF) in Minneapolis-St. Paul, AND the Lead Digital Strategist / SEO Social Copy Expert for Heartland Signal.
 Today's Date: {today_str}
 Show Name: {show_name}
 Episode Title: {title}
 
+OFFICIAL PODCAST EPISODE NOTES (GROUND TRUTH METADATA):
+{notes_block}
+
 {history_context}
 
-INSTRUCTIONS:
-Listen carefully to the full broadcast audio attached. Produce an in-depth promotional, YouTube packaging, editorial, and compliance memorandum based STRICTLY on what was spoken on air. Never invent, extrapolate, or fabricate quotes or topics.
+CRITICAL ACCURACY & ANTI-HALLUCINATION RULES:
+1. Listen to the ENTIRE attached audio file from start to finish — including the opening segment right after the intro music/station ID.
+2. Cross-reference the audio with the OFFICIAL PODCAST EPISODE NOTES above. Every named guest, legislator, or topic listed in the Episode Notes MUST be accurately covered in your summary with specific details and quotes from their interview on the audio.
+3. NEVER write generic filler descriptions (such as "Host opens the show discussing local news and welcoming listeners"). State the exact first topic, guest, or interview immediately.
+4. Never invent, extrapolate, or fabricate quotes or topics not present in the audio or official notes.
 
 ----------------------------------------------------------------------
 SOCIAL EXCERPT & "WHAT'S IN IT FOR ME" STYLE RULES (FOR SECTION 1):
@@ -238,10 +316,10 @@ DATE: {today_str}
    - Provide 8–10 YouTube title options organized under the 4 required categories (📰 Breaking & Headline News, 🧲 Direct Quote / Exposé Hook, ⚡ Ultra-Punchy / Shorts Ready, 🏛️ Policy & Community Impact), strictly following the character limits, front-loading, quote, and ALL-CAPS rules, with [XX chars] at the end of every single title.
 
 3. EXECUTIVE SUMMARY:
-   - 3-4 dense sentences detailing the lead news events, overall broadcast trajectory, and central editorial themes.
+   - 3-4 dense sentences detailing the lead news events, named guests/interviews, overall broadcast trajectory, and central editorial themes.
 
 4. COMPREHENSIVE SEGMENT BREAKDOWN:
-   - Chronological breakdown of each topic discussed.
+   - Chronological breakdown of each topic discussed with timestamps.
    - Detail the core argument, specific candidate/ballot races, local/state policy implications, and notable claims cited.
 
 5. STORY CONTINUITY & REPEAT COVERAGE MONITOR:
@@ -249,7 +327,7 @@ DATE: {today_str}
    - Note whether this story has been covered previously on this show, if it is a continuing development, a brand new breaking topic, or an interview with a repeating guest.
 
 6. GUESTS, INTERVIEWS & CALLERS:
-   - List every named guest with key arguments, organization, and direct quotes.
+   - List every named guest (including anyone listed in the Episode Notes) with key arguments, title/organization, and direct quotes from the broadcast.
    - Summarize notable listener call-ins (name, location, topic raised, host response). If none, state: "Solo monologue; no caller segments."
 
 7. HEARTLAND SIGNAL MONITORING (HeartlandSignal.com):
@@ -277,9 +355,19 @@ DATE: {today_str}
 
     print("Uploading MP3 to Gemini...", flush=True)
     uploaded = client.files.upload(file=AUDIO_PATH)
+
+    # Wait briefly if Gemini is still indexing the uploaded audio file
+    for _ in range(10):
+        file_info = client.files.get(name=uploaded.name)
+        state = getattr(file_info.state, "name", str(file_info.state))
+        if "ACTIVE" in state:
+            break
+        print(f"Waiting for audio file processing (state: {state})...", flush=True)
+        time.sleep(3)
+
     print("Generating comprehensive memo...", flush=True)
 
-    config = types.GenerateContentConfig(temperature=0.2, max_output_tokens=5000)
+    config = types.GenerateContentConfig(temperature=0.15, max_output_tokens=5000)
     for model in ["gemini-3.8-flash", "gemini-3.5-flash-lite"]:
         for attempt in range(1, 4):
             try:
@@ -346,7 +434,7 @@ def main():
         if download_audio(ep["mp3"]):
             try:
                 past_episodes = history.get(show_name, [])
-                summary = generate_summary(show_name, ep["title"], past_episodes)
+                summary = generate_summary(show_name, ep["title"], ep.get("notes", ""), past_episodes)
                 send_email(show_name, ep["title"], summary, ep["id"])
 
                 with open(PROCESSED_FILE, "a") as f:
