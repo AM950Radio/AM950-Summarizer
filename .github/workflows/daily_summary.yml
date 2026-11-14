@@ -2,8 +2,8 @@ name: AM950 Daily Show Summarizer
 
 on:
   schedule:
-    # 7:15 PM Central Standard Time (01:15 UTC next day), catching Monday - Friday evening uploads
-    - cron: '15 1 * * 2-6'
+    # 8:15 PM Central Standard Time (02:15 UTC next day), catching Monday - Friday evening uploads
+    - cron: '15 2 * * 2-6'
   workflow_dispatch:
 
 permissions:
@@ -26,6 +26,7 @@ jobs:
 
       - name: Install dependencies
         run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg
           python -m pip install --upgrade pip
           pip install google-genai requests
 
