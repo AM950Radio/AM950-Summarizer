@@ -2,6 +2,8 @@ import os
 import re
 import json
 import time
+import shutil
+import subprocess
 import datetime
 import smtplib
 from email.mime.multipart import MIMEMultipart
@@ -22,7 +24,8 @@ SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 465
 PROCESSED_FILE = "last_processed_video.txt"
 HISTORY_FILE = "episode_history.json"
-AUDIO_PATH = "broadcast_episode.mp3"
+RAW_AUDIO_PATH = "broadcast_raw.mp3"
+UPLOAD_AUDIO_PATH = "broadcast_episode.mp3"
 
 SHOW_FEEDS = {
     "The Matt McNeil Show": [
@@ -209,23 +212,47 @@ def get_recent_episodes():
     print(f"\nTotal episodes ready to check: {len(episodes)}", flush=True)
     return episodes
 
-def download_audio(url):
+def cleanup_audio():
+    for path in [RAW_AUDIO_PATH, UPLOAD_AUDIO_PATH]:
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+
+def download_and_prepare_audio(url):
     print(f"Downloading MP3: {url}", flush=True)
-    if os.path.exists(AUDIO_PATH):
-        os.remove(AUDIO_PATH)
+    cleanup_audio()
     try:
         r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, stream=True, timeout=120)
         r.raise_for_status()
-        with open(AUDIO_PATH, "wb") as f:
+        with open(RAW_AUDIO_PATH, "wb") as f:
             for chunk in r.iter_content(chunk_size=1048576):
                 if chunk:
                     f.write(chunk)
-        if os.path.exists(AUDIO_PATH):
-            size_mb = os.path.getsize(AUDIO_PATH) / 1048576
-            print(f"Audio downloaded: {size_mb:.2f} MB", flush=True)
-            return True
+        if not os.path.exists(RAW_AUDIO_PATH):
+            return False
+
+        size_mb = os.path.getsize(RAW_AUDIO_PATH) / 1048576
+        print(f"Audio downloaded: {size_mb:.2f} MB", flush=True)
+
+        # Compress files > 18 MB to crisp mono speech (24k) so Gemini processes fast without 504 timeouts
+        if size_mb > 18.0 and shutil.which("ffmpeg"):
+            print("Compressing large audio to lightweight speech MP3 via ffmpeg...", flush=True)
+            cmd = [
+                "ffmpeg", "-y", "-i", RAW_AUDIO_PATH,
+                "-ac", "1", "-ar", "16000", "-b:a", "24k",
+                UPLOAD_AUDIO_PATH
+            ]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            comp_mb = os.path.getsize(UPLOAD_AUDIO_PATH) / 1048576
+            print(f"Compressed audio size: {comp_mb:.2f} MB", flush=True)
+        else:
+            os.replace(RAW_AUDIO_PATH, UPLOAD_AUDIO_PATH)
+
+        return os.path.exists(UPLOAD_AUDIO_PATH)
     except Exception as e:
-        print(f"Download failed: {e}", flush=True)
+        print(f"Download/prepare failed: {e}", flush=True)
     return False
 
 def generate_summary(show_name, title, notes, past_episodes):
@@ -355,7 +382,7 @@ DATE: {today_str}
 """
 
     print("Uploading MP3 to Gemini...", flush=True)
-    uploaded = client.files.upload(file=AUDIO_PATH)
+    uploaded = client.files.upload(file=UPLOAD_AUDIO_PATH)
 
     for _ in range(10):
         file_info = client.files.get(name=uploaded.name)
@@ -371,7 +398,7 @@ DATE: {today_str}
         temperature=0.1,
         max_output_tokens=5000
     )
-    models = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-3.5-flash-lite", "gemini-2.5-pro"]
+    models = ["gemini-3.8-flash", "gemini-3.1-pro-preview", "gemini-3.5-flash-lite"]
     for model in models:
         for attempt in range(1, 3):
             try:
@@ -435,7 +462,7 @@ def main():
     for ep in pending:
         show_name = ep["show"]
         print(f"\n--- Processing: {show_name} - {ep['title']} ---", flush=True)
-        if download_audio(ep["mp3"]):
+        if download_and_prepare_audio(ep["mp3"]):
             try:
                 past_episodes = history.get(show_name, [])
                 summary = generate_summary(show_name, ep["title"], ep.get("notes", ""), past_episodes)
@@ -459,8 +486,7 @@ def main():
             except Exception as e:
                 print(f"Processing error: {e}", flush=True)
             finally:
-                if os.path.exists(AUDIO_PATH):
-                    os.remove(AUDIO_PATH)
+                cleanup_audio()
         time.sleep(3)
 
     print("\nBatch process complete.", flush=True)
