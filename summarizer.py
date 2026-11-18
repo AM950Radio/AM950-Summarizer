@@ -310,7 +310,7 @@ Official Show Notes: {notes_block}
 
 Produce a detailed chronological broadcast log covering:
 1. Every topic discussed with exact [MM:SS] start/end timestamps (do NOT round to 5-minute blocks).
-2. Every guest interviewed (full name, title/organization, exact arrival timestamp, key arguments, and verbatim quotes).
+2. Every guest interviewed: full name, exact arrival timestamp, verbatim quote of how the host introduced them (whether the host stated why they are important to the topic, their relevant title, their background, and the topic to be discussed), key arguments, and verbatim quotes.
 3. Any callers (name, city, topic).
 4. Any mention of Heartland Signal / HeartlandSignal.com or reporters.
 5. Any external audio/video clips played on-air.
@@ -437,9 +437,14 @@ DATE: {today_str}
    - Compare today's broadcast against the RECENT PREVIOUS EPISODES list provided above.
    - Note whether this story has been covered previously on this show, if it is a continuing development, a brand new breaking topic, or an interview with a repeating guest.
 
-6. GUESTS, INTERVIEWS & CALLERS:
-   - List every named guest (including anyone listed in the Episode Notes) with their exact [MM:SS] appearance timestamp, key arguments, title/organization, and direct quotes from the broadcast.
-   - Summarize notable listener call-ins (name, location, topic raised, host response). If none, state: "Solo monologue; no caller segments."
+6. GUESTS, INTERVIEWS, HOST INTRO AUDIT & CALLERS:
+   - For EVERY named guest interviewed (including anyone listed in the Episode Notes), list their exact [MM:SS] appearance timestamp, key arguments, and direct quotes, AND include a **Host Introduction Audit** evaluating what the host actually said on-air before/as the guest joined:
+     * **1) Importance to Topic Explained:** [Pass / Missing] — Did the host explain why this guest is important or relevant to the topic? (Quote or note what was missed).
+     * **2) Relevant Title Stated:** [Pass / Missing / N/A] — Did the host state the guest's title/role relevant to the topic?
+     * **3) Guest Background Provided:** [Pass / Missing] — Did the host give listeners background/credentials on who the guest is?
+     * **4) Topic Stated Up Front:** [Pass / Missing] — Did the host clearly state the topic they want to discuss?
+     * **Intro Coaching Verdict:** [Complete / Needs Improvement — 1-sentence coaching note on what the host did well or missed].
+   - Summarize notable listener call-ins (name, location, topic raised, host response). If no guests or callers, state: "Solo monologue; no guest or caller segments."
 
 7. HEARTLAND SIGNAL MONITORING (HeartlandSignal.com):
    - Explicitly note whether Heartland Signal, HeartlandSignal.com, or Heartland Signal staff/reporters were cited, interviewed, or credited.
