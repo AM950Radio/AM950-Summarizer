@@ -1,5 +1,6 @@
 import os
 import re
+import glob
 import json
 import time
 import shutil
@@ -25,7 +26,7 @@ SMTP_PORT = 465
 PROCESSED_FILE = "last_processed_video.txt"
 HISTORY_FILE = "episode_history.json"
 RAW_AUDIO_PATH = "broadcast_raw.mp3"
-UPLOAD_AUDIO_PATH = "broadcast_episode.mp3"
+CHUNK_PREFIX = "broadcast_part_"
 
 SHOW_FEEDS = {
     "The Matt McNeil Show": [
@@ -213,7 +214,7 @@ def get_recent_episodes():
     return episodes
 
 def cleanup_audio():
-    for path in [RAW_AUDIO_PATH, UPLOAD_AUDIO_PATH]:
+    for path in [RAW_AUDIO_PATH] + glob.glob(f"{CHUNK_PREFIX}*.mp3"):
         if os.path.exists(path):
             try:
                 os.remove(path)
@@ -231,31 +232,62 @@ def download_and_prepare_audio(url):
                 if chunk:
                     f.write(chunk)
         if not os.path.exists(RAW_AUDIO_PATH):
-            return False
+            return []
 
         size_mb = os.path.getsize(RAW_AUDIO_PATH) / 1048576
         print(f"Audio downloaded: {size_mb:.2f} MB", flush=True)
 
-        # Compress files > 18 MB to crisp mono speech (24k) so Gemini processes fast without 504 timeouts
-        if size_mb > 18.0 and shutil.which("ffmpeg"):
-            print("Compressing large audio to lightweight speech MP3 via ffmpeg...", flush=True)
+        if shutil.which("ffmpeg"):
+            # Split into 45-minute (2700s) lightweight speech segments (24k mono)
+            # Shows <= 45 mins stay 1 file; 2-hour shows split into 2-3 fast segments
+            print("Preparing speech-optimized audio segment(s) via ffmpeg...", flush=True)
             cmd = [
                 "ffmpeg", "-y", "-i", RAW_AUDIO_PATH,
                 "-ac", "1", "-ar", "16000", "-b:a", "24k",
-                UPLOAD_AUDIO_PATH
+                "-f", "segment", "-segment_time", "2700", "-reset_timestamps", "1",
+                f"{CHUNK_PREFIX}%02d.mp3"
             ]
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-            comp_mb = os.path.getsize(UPLOAD_AUDIO_PATH) / 1048576
-            print(f"Compressed audio size: {comp_mb:.2f} MB", flush=True)
+            chunks = sorted(glob.glob(f"{CHUNK_PREFIX}*.mp3"))
+            for c in chunks:
+                c_mb = os.path.getsize(c) / 1048576
+                print(f"  Segment ready: {c} ({c_mb:.2f} MB)", flush=True)
+            return chunks
         else:
-            os.replace(RAW_AUDIO_PATH, UPLOAD_AUDIO_PATH)
-
-        return os.path.exists(UPLOAD_AUDIO_PATH)
+            fallback = f"{CHUNK_PREFIX}00.mp3"
+            os.replace(RAW_AUDIO_PATH, fallback)
+            return [fallback]
     except Exception as e:
         print(f"Download/prepare failed: {e}", flush=True)
-    return False
+    return []
 
-def generate_summary(show_name, title, notes, past_episodes):
+def call_gemini_with_retry(client, contents, config):
+    models = ["gemini-3.8-flash", "gemini-3.5-flash-lite"]
+    for model in models:
+        for attempt in range(1, 4):
+            try:
+                print(f"Calling {model} (attempt {attempt}/3)...", flush=True)
+                res = client.models.generate_content(model=model, contents=contents, config=config)
+                if res and res.text:
+                    return res.text
+            except Exception as e:
+                print(f"{model} attempt {attempt} error: {e}", flush=True)
+                time.sleep(15 * attempt)
+    raise RuntimeError("All models failed to generate response.")
+
+def upload_file_and_wait(client, path):
+    print(f"Uploading {path} to Gemini...", flush=True)
+    uploaded = client.files.upload(file=path)
+    for _ in range(12):
+        file_info = client.files.get(name=uploaded.name)
+        state = getattr(file_info.state, "name", str(file_info.state))
+        if "ACTIVE" in state:
+            return uploaded
+        print(f"Waiting for audio processing (state: {state})...", flush=True)
+        time.sleep(3)
+    return uploaded
+
+def generate_summary(show_name, title, notes, past_episodes, chunk_paths):
     client = genai.Client(api_key=GEMINI_API_KEY, http_options=types.HttpOptions(timeout=300000.0))
     today_str = datetime.datetime.now().strftime("%B %d, %Y")
 
@@ -268,7 +300,61 @@ def generate_summary(show_name, title, notes, past_episodes):
 
     notes_block = notes if notes else "No text show notes provided in RSS feed; rely strictly on the spoken audio."
 
-    prompt = f"""You are the Executive Station & Editorial Director at AM950 Radio (KTNF) in Minneapolis-St. Paul, AND the Lead Digital Strategist / SEO Social Copy Expert for Heartland Signal.
+    # If the show was split into multiple 45-min parts (e.g., 2-hour Matt McNeil Show),
+    # transcribe/log each part first so Gemini never times out on 230k+ audio tokens at once.
+    if len(chunk_paths) > 1:
+        print(f"Multi-part broadcast ({len(chunk_paths)} parts). Extracting detailed segment logs per part...", flush=True)
+        part_logs = []
+        for idx, c_path in enumerate(chunk_paths):
+            offset_mins = idx * 45
+            uploaded_part = upload_file_and_wait(client, c_path)
+            part_prompt = f"""Listen to Part {idx+1} of {len(chunk_paths)} of "{show_name} - {title}".
+This audio segment begins at minute {offset_mins:02d}:00 of the full broadcast (add {offset_mins} minutes to all local timestamps so timestamps reflect the full broadcast clock).
+Official Show Notes: {notes_block}
+
+Produce a detailed chronological broadcast log covering:
+1. Every topic discussed with exact [MM:SS] start/end timestamps (do NOT round to 5-minute blocks).
+2. Every guest interviewed (full name, title/organization, exact arrival timestamp, key arguments, and verbatim quotes).
+3. Any callers (name, city, topic).
+4. Any mention of Heartland Signal / HeartlandSignal.com or reporters.
+5. Any external audio/video clips played on-air.
+6. Any derogatory remarks about rural Minnesotans, unsubstantiated conspiracy theories, sponsors/underwriters thanked, or FCC/decency issues.
+Be exhaustive and strictly factual."""
+            try:
+                log_text = call_gemini_with_retry(
+                    client,
+                    [uploaded_part, part_prompt],
+                    types.GenerateContentConfig(temperature=0.1, max_output_tokens=3500)
+                )
+                part_logs.append(f"=== BROADCAST PART {idx+1} (STARTS AT {offset_mins:02d}:00) ===\n{log_text}")
+            finally:
+                try:
+                    client.files.delete(name=uploaded_part.name)
+                except Exception:
+                    pass
+
+        combined_source = "\n\n".join(part_logs)
+        final_contents = [f"COMPLETE CHRONOLOGICAL BROADCAST LOG:\n\n{combined_source}\n\n" + build_master_prompt(show_name, title, today_str, notes_block, history_context)]
+    else:
+        uploaded = upload_file_and_wait(client, chunk_paths[0])
+        final_contents = [uploaded, build_master_prompt(show_name, title, today_str, notes_block, history_context)]
+
+    print("Generating comprehensive memo...", flush=True)
+    try:
+        return call_gemini_with_retry(
+            client,
+            final_contents,
+            types.GenerateContentConfig(temperature=0.1, max_output_tokens=5000)
+        )
+    finally:
+        if len(chunk_paths) == 1:
+            try:
+                client.files.delete(name=final_contents[0].name)
+            except Exception:
+                pass
+
+def build_master_prompt(show_name, title, today_str, notes_block, history_context):
+    return f"""You are the Executive Station & Editorial Director at AM950 Radio (KTNF) in Minneapolis-St. Paul, AND the Lead Digital Strategist / SEO Social Copy Expert for Heartland Signal.
 Today's Date: {today_str}
 Show Name: {show_name}
 Episode Title: {title}
@@ -279,9 +365,9 @@ OFFICIAL PODCAST EPISODE NOTES (GROUND TRUTH METADATA):
 {history_context}
 
 CRITICAL TIMESTAMP & ANTI-HALLUCINATION RULES:
-1. Listen to the ENTIRE attached audio file starting from 00:00 — pay close attention to the exact second/minute when the intro music ends and the first topic or guest interview begins (often around 00:30 to 02:00).
+1. Rely strictly on the full broadcast audio / chronological broadcast log from 00:00 to the end — pay close attention to the exact second/minute when the intro music ends and the first topic or guest interview begins.
 2. NEVER round timestamps to arbitrary 5-minute blocks (such as "00:00 – 05:00") and NEVER invent generic filler summaries (such as "Host opens the show welcoming listeners and setting the stage for discussions"). State the exact [MM:SS] timestamp when each segment or guest actually starts speaking.
-3. Cross-reference the audio with the OFFICIAL PODCAST EPISODE NOTES above. Every named guest, legislator, or topic listed in the Episode Notes MUST be accurately covered with their exact start timestamp and direct quotes from the audio.
+3. Cross-reference with the OFFICIAL PODCAST EPISODE NOTES above. Every named guest, legislator, or topic listed in the Episode Notes MUST be accurately covered with their exact start timestamp and direct quotes.
 4. Never invent, extrapolate, or fabricate quotes, timestamps, or topics.
 
 ----------------------------------------------------------------------
@@ -381,41 +467,6 @@ DATE: {today_str}
     - Provide a single comma-separated list of 3 to 6 major topics/names discussed in this broadcast (for archiving and historical tracking).
 """
 
-    print("Uploading MP3 to Gemini...", flush=True)
-    uploaded = client.files.upload(file=UPLOAD_AUDIO_PATH)
-
-    for _ in range(10):
-        file_info = client.files.get(name=uploaded.name)
-        state = getattr(file_info.state, "name", str(file_info.state))
-        if "ACTIVE" in state:
-            break
-        print(f"Waiting for audio file processing (state: {state})...", flush=True)
-        time.sleep(3)
-
-    print("Generating comprehensive memo...", flush=True)
-
-    config = types.GenerateContentConfig(
-        temperature=0.1,
-        max_output_tokens=5000
-    )
-    models = ["gemini-3.8-flash", "gemini-3.1-pro-preview", "gemini-3.5-flash-lite"]
-    for model in models:
-        for attempt in range(1, 3):
-            try:
-                print(f"Calling {model} (attempt {attempt}/2)...", flush=True)
-                res = client.models.generate_content(model=model, contents=[uploaded, prompt], config=config)
-                if res and res.text:
-                    try:
-                        client.files.delete(name=uploaded.name)
-                    except Exception:
-                        pass
-                    return res.text
-            except Exception as e:
-                print(f"{model} attempt {attempt} error: {e}", flush=True)
-                time.sleep(15 * attempt)
-
-    raise RuntimeError("All models failed to generate summary.")
-
 def send_email(show_name, title, body, link):
     msg = MIMEMultipart()
     msg['From'] = EMAIL_SENDER
@@ -462,10 +513,11 @@ def main():
     for ep in pending:
         show_name = ep["show"]
         print(f"\n--- Processing: {show_name} - {ep['title']} ---", flush=True)
-        if download_and_prepare_audio(ep["mp3"]):
+        chunks = download_and_prepare_audio(ep["mp3"])
+        if chunks:
             try:
                 past_episodes = history.get(show_name, [])
-                summary = generate_summary(show_name, ep["title"], ep.get("notes", ""), past_episodes)
+                summary = generate_summary(show_name, ep["title"], ep.get("notes", ""), past_episodes, chunks)
                 send_email(show_name, ep["title"], summary, ep["id"])
 
                 with open(PROCESSED_FILE, "a") as f:
