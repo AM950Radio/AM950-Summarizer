@@ -238,8 +238,6 @@ def download_and_prepare_audio(url):
         print(f"Audio downloaded: {size_mb:.2f} MB", flush=True)
 
         if shutil.which("ffmpeg"):
-            # Split into 45-minute (2700s) lightweight speech segments (24k mono)
-            # Shows <= 45 mins stay 1 file; 2-hour shows split into 2-3 fast segments
             print("Preparing speech-optimized audio segment(s) via ffmpeg...", flush=True)
             cmd = [
                 "ffmpeg", "-y", "-i", RAW_AUDIO_PATH,
@@ -300,8 +298,6 @@ def generate_summary(show_name, title, notes, past_episodes, chunk_paths):
 
     notes_block = notes if notes else "No text show notes provided in RSS feed; rely strictly on the spoken audio."
 
-    # If the show was split into multiple 45-min parts (e.g., 2-hour Matt McNeil Show),
-    # transcribe/log each part first so Gemini never times out on 230k+ audio tokens at once.
     if len(chunk_paths) > 1:
         print(f"Multi-part broadcast ({len(chunk_paths)} parts). Extracting detailed segment logs per part...", flush=True)
         part_logs = []
@@ -324,7 +320,7 @@ Be exhaustive and strictly factual."""
                 log_text = call_gemini_with_retry(
                     client,
                     [uploaded_part, part_prompt],
-                    types.GenerateContentConfig(temperature=0.1, max_output_tokens=3500)
+                    types.GenerateContentConfig(temperature=0.1, max_output_tokens=4096)
                 )
                 part_logs.append(f"=== BROADCAST PART {idx+1} (STARTS AT {offset_mins:02d}:00) ===\n{log_text}")
             finally:
@@ -344,7 +340,7 @@ Be exhaustive and strictly factual."""
         return call_gemini_with_retry(
             client,
             final_contents,
-            types.GenerateContentConfig(temperature=0.1, max_output_tokens=5000)
+            types.GenerateContentConfig(temperature=0.1, max_output_tokens=8192)
         )
     finally:
         if len(chunk_paths) == 1:
@@ -364,11 +360,12 @@ OFFICIAL PODCAST EPISODE NOTES (GROUND TRUTH METADATA):
 
 {history_context}
 
-CRITICAL TIMESTAMP & ANTI-HALLUCINATION RULES:
-1. Rely strictly on the full broadcast audio / chronological broadcast log from 00:00 to the end — pay close attention to the exact second/minute when the intro music ends and the first topic or guest interview begins.
-2. NEVER round timestamps to arbitrary 5-minute blocks (such as "00:00 – 05:00") and NEVER invent generic filler summaries (such as "Host opens the show welcoming listeners and setting the stage for discussions"). State the exact [MM:SS] timestamp when each segment or guest actually starts speaking.
-3. Cross-reference with the OFFICIAL PODCAST EPISODE NOTES above. Every named guest, legislator, or topic listed in the Episode Notes MUST be accurately covered with their exact start timestamp and direct quotes.
-4. Never invent, extrapolate, or fabricate quotes, timestamps, or topics.
+CRITICAL COMPLETION, TIMESTAMP & ANTI-HALLUCINATION RULES:
+1. MANDATORY COMPLETION: You MUST output ALL 13 numbered sections from Section 1 through Section 13 completely. Keep each segment bullet in Section 4 crisp and concise (2–3 tight bullets per segment) so you never run out of space before completing Sections 5–13.
+2. Rely strictly on the full broadcast audio / chronological broadcast log from 00:00 to the end — pay close attention to the exact second/minute when the intro music ends and the first topic or guest interview begins.
+3. NEVER round timestamps to arbitrary 5-minute blocks (such as "00:00 – 05:00") and NEVER invent generic filler summaries (such as "Host opens the show welcoming listeners and setting the stage for discussions"). State the exact [MM:SS] timestamp when each segment or guest actually starts speaking.
+4. Cross-reference with the OFFICIAL PODCAST EPISODE NOTES above. Every named guest, legislator, or topic listed in the Episode Notes MUST be accurately covered with their exact start timestamp and direct quotes.
+5. Never invent, extrapolate, or fabricate quotes, timestamps, or topics.
 
 ----------------------------------------------------------------------
 SOCIAL EXCERPT & "WHAT'S IN IT FOR ME" STYLE RULES (FOR SECTION 1):
@@ -411,7 +408,7 @@ YOUTUBE HEADLINE GENERATOR RULES (FOR SECTION 2):
 - CRITICAL RULE: Always display the character count at the end of every title, e.g., "Title Text Here [52 chars]".
 ----------------------------------------------------------------------
 
-Generate the full memorandum in this exact format:
+Generate the full memorandum in this exact format (ensure ALL 13 sections are completed):
 
 ======================================================================
 EXECUTIVE BROADCAST MEMORANDUM & COMPLIANCE LOG
@@ -434,7 +431,7 @@ DATE: {today_str}
 4. COMPREHENSIVE SEGMENT BREAKDOWN (EXACT MM:SS TIMESTAMPS):
    - Chronological breakdown starting from 00:00 with exact [MM:SS] start/end times (do NOT round to 5-minute blocks).
    - Explicitly note when the theme music/intro ends and when the first guest or topic begins.
-   - Detail the core argument, specific candidate/ballot races, local/state policy implications, and notable claims cited.
+   - Keep each segment concise (2–3 tight bullets covering core argument, policy/race stakes, and key claim) so all remaining sections fit completely.
 
 5. STORY CONTINUITY & REPEAT COVERAGE MONITOR:
    - Compare today's broadcast against the RECENT PREVIOUS EPISODES list provided above.
