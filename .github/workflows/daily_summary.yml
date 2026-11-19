@@ -2,9 +2,21 @@ name: AM950 Daily Show Summarizer
 
 on:
   schedule:
-    # 8:15 PM Central Standard Time (02:15 UTC next day), catching Monday - Friday evening uploads
-    - cron: '15 2 * * 2-6'
+    # 7:00 PM Central Standard Time (01:00 UTC next day), Mon-Fri evening shows
+    - cron: '0 1 * * 2-6'
+    # 11:45 PM Central Standard Time (05:45 UTC next day), Mon-Fri Ghostbox Radio
+    - cron: '45 5 * * 2-6'
   workflow_dispatch:
+    inputs:
+      show_group:
+        description: 'Which show group to run (all, evening, or latenight)'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - evening
+          - latenight
 
 permissions:
   contents: write
@@ -36,6 +48,7 @@ jobs:
           EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_RECIPIENT: ${{ secrets.EMAIL_RECIPIENT }}
+          SHOW_GROUP: ${{ github.event.schedule == '45 5 * * 2-6' && 'latenight' || (github.event.schedule == '0 1 * * 2-6' && 'evening' || github.event.inputs.show_group || 'all') }}
         run: |
           python -u summarizer.py
 
