@@ -67,12 +67,11 @@ SHOW_FEEDS = {
     },
     "Ghostbox Radio with Greg Bakun": {
         "group": "latenight",
-        "keywords": ["Ghostbox", "Greg Bakun", "Bakun"],
+        "keywords": ["Ghostbox", "Ghost Box", "Greg Bakun", "Bakun"],
         "urls": [
-            "https://www.am950radio.com/category/podcasts/ghostbox/feed/",
-            "https://www.am950radio.com/category/ghostbox-radio/feed/",
-            "https://www.am950radio.com/category/ghostbox/feed/",
-            "https://www.am950radio.com/category/podcasts/ghostbox-radio/feed/"
+            "https://www.am950radio.com/category/podcasts/ghost/feed/",
+            "https://www.am950radio.com/category/ghost/feed/",
+            "https://www.am950radio.com/category/ghostbox-radio/feed/"
         ]
     }
 }
@@ -211,33 +210,42 @@ def get_recent_episodes():
                 break
 
         if not found:
-            try:
-                r = requests.get("https://www.am950radio.com/category/podcasts/feed/", headers=headers, timeout=15)
-                print(f"Master feed fallback for {show} (keywords: {keywords}) -> Status {r.status_code}", flush=True)
-                if r.status_code == 200:
-                    root = ET.fromstring(r.content)
-                    for item in root.findall(".//item"):
-                        if item_matches_show(item, keywords):
-                            title_node = item.find("title")
-                            title = title_node.text.strip() if (title_node is not None and title_node.text) else show
-                            link_node = item.find("link")
-                            link = link_node.text.strip() if (link_node is not None and link_node.text) else title
-                            mp3 = extract_mp3_from_item(item, link)
-                            if mp3 and link not in seen:
-                                seen.add(link)
-                                notes = extract_show_notes(item)
-                                episodes.append({
-                                    "id": link,
-                                    "show": show,
-                                    "title": title,
-                                    "mp3": mp3,
-                                    "notes": notes
-                                })
-                                print(f"Found via master feed: {title}", flush=True)
-                                found = True
-                                break
-            except Exception as e:
-                print(f"Master feed fallback error: {e}", flush=True)
+            fallback_feeds = [
+                "https://www.am950radio.com/category/podcasts/feed/",
+                "https://www.am950radio.com/feed/"
+            ]
+            for fb_url in fallback_feeds:
+                try:
+                    r = requests.get(fb_url, headers=headers, timeout=15)
+                    print(f"Fallback feed {fb_url} for {show} (keywords: {keywords}) -> Status {r.status_code}", flush=True)
+                    if r.status_code == 200:
+                        root = ET.fromstring(r.content)
+                        items = root.findall(".//item")
+                        print(f"  Fallback items scanned: {len(items)}", flush=True)
+                        for item in items:
+                            if item_matches_show(item, keywords):
+                                title_node = item.find("title")
+                                title = title_node.text.strip() if (title_node is not None and title_node.text) else show
+                                link_node = item.find("link")
+                                link = link_node.text.strip() if (link_node is not None and link_node.text) else title
+                                mp3 = extract_mp3_from_item(item, link)
+                                if mp3 and link not in seen:
+                                    seen.add(link)
+                                    notes = extract_show_notes(item)
+                                    episodes.append({
+                                        "id": link,
+                                        "show": show,
+                                        "title": title,
+                                        "mp3": mp3,
+                                        "notes": notes
+                                    })
+                                    print(f"Found via {fb_url}: {title}", flush=True)
+                                    found = True
+                                    break
+                except Exception as e:
+                    print(f"Fallback feed error ({fb_url}): {e}", flush=True)
+                if found:
+                    break
 
         if not found:
             print(f"No active MP3 found for {show}", flush=True)
