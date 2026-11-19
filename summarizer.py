@@ -21,6 +21,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 EMAIL_SENDER = os.environ.get("EMAIL_SENDER")
 EMAIL_PASSWORD = os.environ.get("EMAIL_PASSWORD")
 EMAIL_RECIPIENT = os.environ.get("EMAIL_RECIPIENT")
+SHOW_GROUP = os.environ.get("SHOW_GROUP", "all").strip().lower()
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 465
 PROCESSED_FILE = "last_processed_video.txt"
@@ -29,25 +30,51 @@ RAW_AUDIO_PATH = "broadcast_raw.mp3"
 CHUNK_PREFIX = "broadcast_part_"
 
 SHOW_FEEDS = {
-    "The Matt McNeil Show": [
-        "https://www.am950radio.com/category/the-matt-mcneil-show/feed/",
-        "https://www.am950radio.com/category/podcasts/mcneil/feed/",
-        "https://www.am950radio.com/category/matt-mcneil/feed/",
-        "https://www.am950radio.com/category/mcneil/feed/"
-    ],
-    "Native Roots Radio": [
-        "https://www.am950radio.com/category/podcasts/im-awake/feed/",
-        "https://www.am950radio.com/category/im-awake/feed/",
-        "https://www.am950radio.com/category/native-roots-radio/feed/"
-    ],
-    "The Gaily Show": [
-        "https://www.am950radio.com/category/podcasts/gaily/feed/",
-        "https://www.am950radio.com/category/gaily/feed/",
-        "https://www.am950radio.com/category/the-gaily-show/feed/"
-    ],
-    "Politics Matters": [
-        "https://www.am950radio.com/category/podcasts/pm/feed/"
-    ]
+    "The Matt McNeil Show": {
+        "group": "evening",
+        "keywords": ["McNeil", "Matt McNeil"],
+        "urls": [
+            "https://www.am950radio.com/category/the-matt-mcneil-show/feed/",
+            "https://www.am950radio.com/category/podcasts/mcneil/feed/",
+            "https://www.am950radio.com/category/matt-mcneil/feed/",
+            "https://www.am950radio.com/category/mcneil/feed/"
+        ]
+    },
+    "Native Roots Radio": {
+        "group": "evening",
+        "keywords": ["Native Roots", "Robert Pilot"],
+        "urls": [
+            "https://www.am950radio.com/category/podcasts/im-awake/feed/",
+            "https://www.am950radio.com/category/im-awake/feed/",
+            "https://www.am950radio.com/category/native-roots-radio/feed/"
+        ]
+    },
+    "The Gaily Show": {
+        "group": "evening",
+        "keywords": ["Gaily"],
+        "urls": [
+            "https://www.am950radio.com/category/podcasts/gaily/feed/",
+            "https://www.am950radio.com/category/gaily/feed/",
+            "https://www.am950radio.com/category/the-gaily-show/feed/"
+        ]
+    },
+    "Politics Matters": {
+        "group": "evening",
+        "keywords": ["Politics Matters"],
+        "urls": [
+            "https://www.am950radio.com/category/podcasts/pm/feed/"
+        ]
+    },
+    "Ghostbox Radio with Greg Bakun": {
+        "group": "latenight",
+        "keywords": ["Ghostbox", "Greg Bakun", "Bakun"],
+        "urls": [
+            "https://www.am950radio.com/category/podcasts/ghostbox/feed/",
+            "https://www.am950radio.com/category/ghostbox-radio/feed/",
+            "https://www.am950radio.com/category/ghostbox/feed/",
+            "https://www.am950radio.com/category/podcasts/ghostbox-radio/feed/"
+        ]
+    }
 }
 
 def load_history():
@@ -118,17 +145,16 @@ def extract_mp3_from_item(item, link=""):
 
     return None
 
-def item_matches_show(item, keyword):
+def item_matches_show(item, keywords):
     title_node = item.find("title")
     title = title_node.text if (title_node is not None and title_node.text) else ""
-    if re.search(keyword, title, re.IGNORECASE):
-        return True
-    for cat in item.findall("category"):
-        if cat.text and re.search(keyword, cat.text, re.IGNORECASE):
-            return True
+    cats = " ".join([cat.text for cat in item.findall("category") if cat.text])
     desc = extract_show_notes(item)
-    if re.search(keyword, desc, re.IGNORECASE):
-        return True
+    combined = f"{title} {cats} {desc}"
+
+    for kw in keywords:
+        if re.search(kw, combined, re.IGNORECASE):
+            return True
     return False
 
 def get_recent_episodes():
@@ -136,7 +162,14 @@ def get_recent_episodes():
     episodes = []
     seen = set()
 
-    for show, urls in SHOW_FEEDS.items():
+    print(f"Active SHOW_GROUP filter: {SHOW_GROUP}", flush=True)
+
+    for show, cfg in SHOW_FEEDS.items():
+        if SHOW_GROUP != "all" and cfg["group"] != SHOW_GROUP:
+            continue
+
+        urls = cfg["urls"]
+        keywords = cfg["keywords"]
         found = False
         print(f"\nChecking feed for: {show}", flush=True)
         for url in urls:
@@ -178,14 +211,13 @@ def get_recent_episodes():
                 break
 
         if not found:
-            keyword = "McNeil" if "McNeil" in show else show.split()[0]
             try:
                 r = requests.get("https://www.am950radio.com/category/podcasts/feed/", headers=headers, timeout=15)
-                print(f"Master feed fallback for {show} (keyword: {keyword}) -> Status {r.status_code}", flush=True)
+                print(f"Master feed fallback for {show} (keywords: {keywords}) -> Status {r.status_code}", flush=True)
                 if r.status_code == 200:
                     root = ET.fromstring(r.content)
                     for item in root.findall(".//item"):
-                        if item_matches_show(item, keyword):
+                        if item_matches_show(item, keywords):
                             title_node = item.find("title")
                             title = title_node.text.strip() if (title_node is not None and title_node.text) else show
                             link_node = item.find("link")
